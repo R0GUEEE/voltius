@@ -13,6 +13,7 @@ mod crypto;
 mod docker;
 mod error;
 mod ftp;
+mod ios_native;
 #[cfg(target_os = "android")]
 mod keychain_android;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -100,6 +101,8 @@ fn init_keychain_store() -> keyring_core::Result<()> {
     )?);
     #[cfg(target_os = "android")]
     keyring_core::set_default_store(crate::keychain_android::Store::new());
+    #[cfg(target_os = "ios")]
+    keyring_core::set_default_store(apple_native_keyring_store::protected::Store::new()?);
     Ok(())
 }
 
@@ -226,6 +229,9 @@ pub fn run() {
 
             // Verbose logging auto-reverts on every launch: always start at Info.
             log::set_max_level(log::LevelFilter::Info);
+
+            #[cfg(target_os = "ios")]
+            crate::ios_native::hide_keyboard_accessory_bar();
 
             // On Android `dirs::config_dir()` resolves to an unwritable cwd, so
             // pin generic file storage (connections, plugins, identities, …) to
@@ -482,6 +488,8 @@ pub fn run() {
             commands::downloads::download_dir_pick,
             commands::downloads::download_dir_clear,
             commands::downloads::download_publish,
+            ios_native::haptic_perform,
+            ios_native::share_files_native,
             commands::sftp::sftp_transfer_batch_tar,
             commands::plugin_storage::plugin_storage_get,
             commands::plugin_storage::plugin_storage_read_strict,
