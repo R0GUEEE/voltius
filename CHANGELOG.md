@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.64.1] - 2026-10-28
+
+### Added
+
+- On Android, the Snippets screen has a Community tab, as on desktop: browse and search the community catalogue, open a pack to choose which snippets to install, and install them into the current vault (#725)
+
+### Fixed
+
+- In the community snippet list, the author and snippet count are no longer cut off when the description is long (#725)
+
 ## [0.64.0] - 2026-10-28
 
 ### Added
