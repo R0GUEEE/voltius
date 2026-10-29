@@ -10,6 +10,8 @@ mod app_lock;
 mod clock;
 mod commands;
 mod crypto;
+#[allow(dead_code)]
+mod device_files;
 mod docker;
 mod error;
 mod ftp;
