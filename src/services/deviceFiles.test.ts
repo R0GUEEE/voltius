@@ -7,11 +7,14 @@ const h = vi.hoisted(() => ({
   platform: "linux",
   account: "acct" as string | null,
   pending: [] as unknown[],
+  gate: null as Promise<void> | null,
+  failConfig: false,
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: async (name: string, fn: (e: { payload: unknown }) => void) => {
+    await h.gate;
     h.handlers.set(name, fn);
     return () => h.handlers.delete(name);
   },
@@ -36,7 +39,10 @@ const calls = (cmd: string) => h.invoke.mock.calls.filter(([c]) => c === cmd);
 beforeEach(async () => {
   await stopDeviceFiles();
   h.invoke.mockReset().mockImplementation(async (cmd: string) => {
-    if (cmd === "device_files_get_config") return CONFIG;
+    if (cmd === "device_files_get_config") {
+      if (h.failConfig) throw new Error("config failed");
+      return CONFIG;
+    }
     if (cmd === "device_files_pending") return h.pending;
     return undefined;
   });
@@ -44,6 +50,8 @@ beforeEach(async () => {
   h.account = "acct";
   h.pending = [];
   h.handlers.clear();
+  h.gate = null;
+  h.failConfig = false;
 });
 
 describe("deviceFiles", () => {
@@ -97,5 +105,31 @@ describe("deviceFiles", () => {
     expect(s.config).toBeNull();
     expect(h.handlers.size).toBe(0);
     expect(calls("device_files_stop")).toHaveLength(1);
+  });
+
+  test("stop during start leaves no listeners and a later start works", async () => {
+    let open!: () => void;
+    h.gate = new Promise<void>((r) => (open = r));
+    const first = startDeviceFiles();
+    await vi.waitFor(() => expect(calls("device_files_start")).toHaveLength(1));
+    await stopDeviceFiles();
+    open();
+    await first;
+    expect(h.handlers.size).toBe(0);
+    h.gate = null;
+    await startDeviceFiles();
+    expect(calls("device_files_start")).toHaveLength(2);
+    expect(h.handlers.size).toBe(3);
+    expect(useDeviceFilesStore.getState().config).toEqual(CONFIG);
+  });
+
+  test("failed setup tears down and a retry succeeds", async () => {
+    h.failConfig = true;
+    await expect(startDeviceFiles()).rejects.toThrow("config failed");
+    expect(h.handlers.size).toBe(0);
+    expect(calls("device_files_stop")).toHaveLength(1);
+    h.failConfig = false;
+    await startDeviceFiles();
+    expect(h.handlers.size).toBe(3);
   });
 });

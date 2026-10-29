@@ -16,6 +16,7 @@ const fail = (context: string) => logFailure(`device-files ${context}`);
 
 let offs: Array<() => void> = [];
 let starting: Promise<void> | null = null;
+let generation = 0;
 
 async function refreshPending(): Promise<void> {
   store().setPending(await invoke<ApprovalPrompt[]>("device_files_pending"));
@@ -23,32 +24,47 @@ async function refreshPending(): Promise<void> {
 
 const refresh = () => refreshPending().catch(fail("pending"));
 
-async function begin(): Promise<void> {
+async function begin(gen: number): Promise<void> {
   if ((await getPlatform()) === "android") return;
   const accountId = await getAccountId();
-  if (!accountId) return;
+  if (!accountId || gen !== generation) return;
   await invoke("device_files_start", { accountId });
-  const next: Array<() => void> = [
-    await listen("device-files://request", () => void refresh()),
-    await listen<ActiveSession[]>("device-files://sessions", (e) => store().setSessions(e.payload)),
-    await listen<FileAccessConfig>("device-files://config", (e) => store().setConfig(e.payload)),
-  ];
-  window.addEventListener("focus", refresh);
-  next.push(() => window.removeEventListener("focus", refresh));
-  offs = next;
-  store().setConfig(await invoke<FileAccessConfig>("device_files_get_config"));
-  await refreshPending();
+  const attached: Array<() => void> = [];
+  const detach = () => attached.splice(0).forEach((off) => off());
+  try {
+    attached.push(await listen("device-files://request", () => void refresh()));
+    attached.push(await listen<ActiveSession[]>("device-files://sessions", (e) => store().setSessions(e.payload)));
+    attached.push(await listen<FileAccessConfig>("device-files://config", (e) => store().setConfig(e.payload)));
+    window.addEventListener("focus", refresh);
+    attached.push(() => window.removeEventListener("focus", refresh));
+    const config = await invoke<FileAccessConfig>("device_files_get_config");
+    const pending = await invoke<ApprovalPrompt[]>("device_files_pending");
+    if (gen !== generation) return detach();
+    store().setConfig(config);
+    store().setPending(pending);
+    offs = attached;
+  } catch (e) {
+    detach();
+    if (gen === generation) await invoke("device_files_stop").catch(fail("stop"));
+    throw e;
+  }
+  if (gen !== generation) {
+    offs.forEach((off) => off());
+    offs = [];
+  }
 }
 
 export function startDeviceFiles(): Promise<void> {
   if (offs.length > 0) return Promise.resolve();
-  starting ??= begin().finally(() => {
+  starting ??= begin(generation).finally(() => {
     starting = null;
   });
   return starting;
 }
 
 export async function stopDeviceFiles(): Promise<void> {
+  generation++;
+  starting = null;
   offs.forEach((off) => off());
   offs = [];
   store().reset();

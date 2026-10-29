@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useLanSyncStore } from "@/stores/lanSyncStore";
 import { getDeviceId } from "@/services/sync";
 import type { KnownDevice, LanRoute, PeerInfo } from "@/services/lanSyncDevices";
-import { useIsAndroid } from "@/utils/platform";
 
 export type MyDeviceState = "ready" | "off" | "offline";
 
@@ -60,10 +59,9 @@ export function buildMyDevices(input: {
 export function useMyDevices(): MyDevice[] {
   const peers = useLanSyncStore((s) => s.peers);
   const known = useLanSyncStore((s) => s.known);
-  const viewerIsAndroid = useIsAndroid();
   const [selfId, setSelfId] = useState("");
   useEffect(() => {
     void getDeviceId().then(setSelfId);
   }, []);
-  return useMemo(() => buildMyDevices({ selfId, peers, known, viewerIsAndroid }), [selfId, peers, known, viewerIsAndroid]);
+  return useMemo(() => buildMyDevices({ selfId, peers, known, viewerIsAndroid: false }), [selfId, peers, known]);
 }
