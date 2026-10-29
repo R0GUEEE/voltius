@@ -42,7 +42,11 @@ jobs:
           rustup show
           rustup target add aarch64-apple-ios
 
+      # CACHE_ON_FAILURE: a failed archive still leaves ~15 minutes of compiled
+      # release dependencies behind; throwing them away doubles the next attempt.
       - uses: swatinem/rust-cache@v2
+        env:
+          CACHE_ON_FAILURE: true
         with:
           workspaces: '. -> target'
           key: ios
