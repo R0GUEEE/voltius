@@ -6,12 +6,15 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::{File, FileTimes, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, UNIX_EPOCH};
 
 const MAX_HANDLES: usize = 256;
 const MAX_READ: u32 = 1 << 18;
 const BATCH: usize = 100;
+
+// Process-wide: another session's rename must not swap a component between resolve and syscall.
+static PATHS: Mutex<()> = Mutex::new(());
 
 #[derive(Clone)]
 struct OpenFile {
@@ -77,7 +80,7 @@ fn target(
 
 fn no_follow(opts: &mut OpenOptions) -> &mut OpenOptions {
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(opts, libc::O_NOFOLLOW);
+    std::os::unix::fs::OpenOptionsExt::custom_flags(opts, libc::O_NOFOLLOW | libc::O_NONBLOCK);
     #[cfg(windows)]
     std::os::windows::fs::OpenOptionsExt::custom_flags(
         opts,
@@ -250,7 +253,11 @@ impl SharedFs {
         f: impl FnOnce(&SharedRoots) -> Result<T, StatusCode> + Send + 'static,
     ) -> Result<T, StatusCode> {
         let roots = Arc::clone(&self.roots);
-        blocking(move || f(&roots)).await
+        blocking(move || {
+            let _held = PATHS.lock().unwrap_or_else(PoisonError::into_inner);
+            f(&roots)
+        })
+        .await
     }
 
     async fn path_attrs(&self, vpath: String, follow: bool) -> Result<FileAttributes, StatusCode> {
@@ -292,7 +299,9 @@ impl russh_sftp::server::Handler for SharedFs {
     }
 
     async fn realpath(&mut self, id: u32, path: String) -> Result<Name, StatusCode> {
-        let vpath = format!("/{}", normalize(&path).join("/"));
+        let vpath = self
+            .on_roots(move |_| Ok(format!("/{}", normalize(&path).join("/"))))
+            .await?;
         Ok(Name {
             id,
             files: vec![Entry::dummy(vpath)],
@@ -707,6 +716,77 @@ mod tests {
         assert_eq!(
             fs::read(t.dir.path().join("secret/pw")).unwrap(),
             b"hunter2"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn damaging_escapes_through_a_symlink_are_no_such_file() {
+        let t = serve(false).await;
+        let none = StatusCode::NoSuchFile;
+        assert_eq!(
+            code(t.sftp.rename("/alpha/out/pw", "/alpha/stolen").await),
+            none
+        );
+        assert_eq!(code(t.sftp.remove_file("/alpha/out/pw").await), none);
+        assert_eq!(code(t.sftp.create_dir("/alpha/out/x").await), none);
+        assert_eq!(
+            fs::read(t.dir.path().join("secret/pw")).unwrap(),
+            b"hunter2"
+        );
+        assert!(!t.dir.path().join("secret/x").exists());
+        assert!(!t.alpha().join("stolen").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fifo_in_share_is_refused_not_hung() {
+        let t = serve(false).await;
+        let fifo = std::ffi::CString::new(s(&t.alpha().join("pipe"))).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        let soon = std::time::Duration::from_secs(5);
+        let read = tokio::time::timeout(soon, t.sftp.open("/alpha/pipe")).await;
+        assert_eq!(code(read.expect("open hung")), StatusCode::Failure);
+        let wrote = tokio::time::timeout(
+            soon,
+            t.sftp.open_with_flags("/alpha/pipe", OpenFlags::WRITE),
+        )
+        .await;
+        assert!(wrote.expect("open for write hung").is_err());
+        assert!(t.sftp.metadata("/alpha/f.txt").await.is_ok());
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn every_path_op_waits_for_the_path_lock() {
+        let t = serve(false).await;
+        let open = t.sftp.open("/alpha/f.txt").await.unwrap();
+        let blocked = std::time::Duration::from_millis(150);
+        macro_rules! waits {
+            ($op:expr) => {{
+                let held = PATHS.lock().unwrap_or_else(PoisonError::into_inner);
+                let done = tokio::time::timeout(blocked, $op).await;
+                drop(held);
+                assert!(done.is_err(), "{}", stringify!($op));
+                t.sftp.canonicalize("/").await.unwrap();
+            }};
+        }
+        waits!(t.sftp.canonicalize("/alpha"));
+        waits!(t.sftp.metadata("/alpha/f.txt"));
+        waits!(t.sftp.symlink_metadata("/alpha/f.txt"));
+        waits!(t.sftp.set_metadata("/alpha/f.txt", FileAttributes::empty()));
+        waits!(t.sftp.read_dir("/alpha"));
+        waits!(t.sftp.open("/alpha/f.txt"));
+        waits!(t.sftp.create_dir("/alpha/d"));
+        waits!(t.sftp.remove_dir("/alpha/d"));
+        waits!(t.sftp.remove_file("/alpha/nope"));
+        waits!(t.sftp.rename("/alpha/nope", "/alpha/nope2"));
+        let held = PATHS.lock().unwrap_or_else(PoisonError::into_inner);
+        let fstat = tokio::time::timeout(std::time::Duration::from_secs(10), open.metadata()).await;
+        drop(held);
+        assert_eq!(
+            fstat.expect("fstat waited for the path lock").unwrap().size,
+            Some(4)
         );
     }
 
