@@ -100,7 +100,6 @@ pub async fn device_files_connect(
     connect_id: String,
     relink: Option<String>,
 ) -> Result<DeviceConnected, AppError> {
-    let detail = device_id.clone();
     let closer = app.clone();
     connect_inner(
         &sftp_state,
@@ -108,7 +107,7 @@ pub async fn device_files_connect(
         Arc::new(Lan(app.clone())),
         device_id,
         relink.as_deref(),
-        |step| emit_step(&app, &connect_id, step, detail.as_str()),
+        |step| emit_step(&app, &connect_id, step, ""),
         Box::new(move |id, code| emit_closed(&closer, id, code)),
     )
     .await

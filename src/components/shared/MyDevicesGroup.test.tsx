@@ -83,4 +83,11 @@ describe("MyDevicesGroup", () => {
     fireEvent.click(getByText("layout.sync.local.openSettings"));
     expect(h.openUrl).toHaveBeenCalledOnce();
   });
+
+  test("blocked with no known devices still shows the fix-it line", () => {
+    useLanSyncStore.setState({ status: "blocked" });
+    const { getByText } = render(<MyDevicesGroup density="compact" query="nothing matches" onPick={() => {}} />);
+    expect(getByText("fileTransfer.myDevices.title")).toBeTruthy();
+    expect(getByText("layout.sync.local.status.blocked")).toBeTruthy();
+  });
 });

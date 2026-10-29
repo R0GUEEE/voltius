@@ -2,7 +2,6 @@ import { Fragment, type CSSProperties } from "react";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { Icon } from "@iconify/react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { SheetActionRow, type SheetAction } from "@/components/mobile/sheets/SheetActionRow";
 import { SyncHeaderButton, SyncInlineAction, SyncSectionTitle, type SyncMenuVariant } from "@/components/shared/SyncSectionParts";
 import { useLanDeviceRows } from "@/hooks/useLanDeviceRows";
@@ -18,8 +17,7 @@ import { formatRelative } from "@/utils/localeFormat";
 import { usePlatform } from "@/utils/platform";
 import { deviceIcon } from "@/utils/icons";
 import { routeLabel } from "@/services/myDevices";
-
-const LOCAL_NETWORK_SETTINGS = "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork";
+import { blockedFix } from "@/services/lanBlockedFix";
 
 const STYLES = {
   dropdown: {
@@ -52,19 +50,6 @@ const DOT_STYLE: Record<DeviceDot, CSSProperties> = {
   behind: { background: "var(--t-status-warning)" },
   "offline-ok": { boxShadow: "inset 0 0 0 1.5px var(--t-text-muted)" },
 };
-
-function blockedKey(platform: string | null): string {
-  if (platform === "macos") return "layout.sync.local.status.blocked";
-  if (platform === "windows") return "layout.sync.local.status.blockedOther";
-  return "layout.sync.local.status.blockedNetwork";
-}
-
-export function blockedFix(t: TFunction, platform: string | null) {
-  const action: SheetAction | null = platform === "macos"
-    ? { slug: "open-settings", icon: "lucide:settings", label: t("layout.sync.local.openSettings"), onTap: () => void openUrl(LOCAL_NETWORK_SETTINGS).catch(logFailure("lan-sync open settings")) }
-    : null;
-  return { icon: "lucide:wifi-off", color: "var(--t-status-warning)", label: t(blockedKey(platform)), action };
-}
 
 function statusLine(t: TFunction, paused: boolean, blocked: boolean, rows: DeviceRow[], platform: string | null): { icon: string; color: string; label: string; spin?: boolean } {
   if (paused) return { icon: SYNC_PAUSED_ICON, color: "var(--t-text-dim)", label: t("layout.sync.local.status.paused") };

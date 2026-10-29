@@ -5,7 +5,7 @@ import { Icon } from "@iconify/react";
 import { AvatarTile } from "@/components/shared/AvatarTile";
 import { StatusDot } from "@/components/shared/StatusDot";
 import { SyncInlineAction } from "@/components/shared/SyncSectionParts";
-import { blockedFix } from "@/components/shared/LocalNetworkSection";
+import { blockedFix } from "@/services/lanBlockedFix";
 import { routeLabel, useMyDevices, type MyDevice, type MyDeviceState } from "@/services/myDevices";
 import { useLanSyncStore } from "@/stores/lanSyncStore";
 import { DEVICE_TILE_BASE, deviceIcon } from "@/utils/icons";
@@ -41,9 +41,9 @@ export function MyDevicesGroup({ density, onPick, selectedDeviceId, query = "" }
   const platform = usePlatform();
   const matches = searchMatcher(query);
   const shown = devices.filter((d) => matches(d.name));
-  if (shown.length === 0) return null;
-
   const fix = blocked ? blockedFix(t, platform) : null;
+  if (!fix && shown.length === 0) return null;
+
   return (
     <div data-my-devices>
       <Heading density={density}>{t("fileTransfer.myDevices.title")}</Heading>

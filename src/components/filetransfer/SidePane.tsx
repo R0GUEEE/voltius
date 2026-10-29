@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo, type ComponentProps } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@iconify/react";
 import { useTranslation } from "react-i18next";
@@ -177,26 +177,22 @@ export function SidePane({
         </button>
 
         {pingEnabled && phase.tag === "connected" && pingStatus === "up" && latencyMs !== undefined && (
-          <div
+          <LatencyReadout
             ref={latencyTriggerRef}
-            className="flex items-center gap-1 px-1 cursor-default"
-            style={{ fontSize: 11 }}
+            ms={latencyMs}
+            label={`${latencyMs}ms`}
             onMouseEnter={() => { if (latencyTriggerRef.current) setLatencyRect(latencyTriggerRef.current.getBoundingClientRect()); setShowSparkline(true); }}
             onMouseLeave={() => setShowSparkline(false)}
             title={`${latencyMs}ms`}
-          >
-            <StatusDot tone={latencyTone(latencyMs)} size="sm" />
-            <span style={{ color: latencyColor(latencyMs), fontVariantNumeric: "tabular-nums" }}>{latencyMs}ms</span>
-          </div>
+          />
         )}
 
         {phase.tag === "connected" && phase.route && phase.rttMs !== undefined && (
-          <div data-route-chip className="flex items-center gap-1 px-1 cursor-default" style={{ fontSize: 11 }}>
-            <StatusDot tone={latencyTone(phase.rttMs)} size="sm" />
-            <span style={{ color: latencyColor(phase.rttMs), fontVariantNumeric: "tabular-nums" }}>
-              {t("fileTransfer.myDevices.routeChip", { route: routeLabel(t, phase.route), ms: phase.rttMs })}
-            </span>
-          </div>
+          <LatencyReadout
+            data-route-chip
+            ms={phase.rttMs}
+            label={t("fileTransfer.myDevices.routeChip", { route: routeLabel(t, phase.route), ms: phase.rttMs })}
+          />
         )}
 
         {phase.tag === "connected" && (
@@ -352,6 +348,15 @@ export function SidePane({
         })(),
         document.body,
       )}
+    </div>
+  );
+}
+
+function LatencyReadout({ ms, label, ...rest }: { ms: number; label: string } & ComponentProps<"div">) {
+  return (
+    <div className="flex items-center gap-1 px-1 cursor-default" style={{ fontSize: 11 }} {...rest}>
+      <StatusDot tone={latencyTone(ms)} size="sm" />
+      <span style={{ color: latencyColor(ms), fontVariantNumeric: "tabular-nums" }}>{label}</span>
     </div>
   );
 }

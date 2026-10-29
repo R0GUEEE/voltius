@@ -26,7 +26,7 @@ export function getSftpSteps(): StepConfig[] {
 export function getDeviceSteps(name: string): StepConfig[] {
   return [
     { id: "device_dialing", label: i18n.t("fileTransfer.connect.deviceDialing") },
-    { id: "device_approval", label: i18n.t("fileTransfer.connect.deviceApproval", { name }) },
+    { id: "device_approval", label: i18n.t("fileTransfer.connect.deviceApproval", { name }), lazy: true },
   ];
 }
 
