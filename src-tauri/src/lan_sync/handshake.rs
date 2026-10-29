@@ -10,7 +10,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 const NOISE_PARAMS: &str = "Noise_NN_25519_ChaChaPoly_BLAKE2s";
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 // A silent connection must give its pre-auth slot back long before the whole handshake would.
 const FIRST_MESSAGE_TIMEOUT: Duration = Duration::from_secs(2);
 const NOISE_MAX: usize = 65535;
