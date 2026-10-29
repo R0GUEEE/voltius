@@ -20,6 +20,7 @@ mod keychain_android;
 mod keychain_bundle;
 mod knock;
 mod known_hosts;
+mod lan_sync;
 #[cfg(target_os = "linux")]
 mod linux_gfx;
 mod local;
@@ -277,6 +278,7 @@ pub fn run() {
         .manage(SecretsStore::new())
         .manage(SftpManager::new())
         .manage(SerialSessionManager::new())
+        .manage(commands::lan_sync::LanSyncState::default())
         .invoke_handler(tauri::generate_handler![
             force_quit,
             updater::updater_restart,
@@ -388,6 +390,12 @@ pub fn run() {
             commands::sync::ssh_config_state_load,
             commands::sync::ssh_config_state_save,
             commands::sync::device_hostname,
+            commands::lan_sync::lan_sync_start,
+            commands::lan_sync::lan_sync_stop,
+            commands::lan_sync::lan_sync_broadcast,
+            commands::lan_sync::lan_sync_take_blob,
+            commands::lan_sync::lan_sync_peers,
+            commands::lan_sync::lan_sync_set_paused,
             commands::ssh::ssh_connect,
             commands::ssh::ssh_disconnect,
             commands::ssh::ssh_send_input,

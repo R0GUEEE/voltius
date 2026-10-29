@@ -64,6 +64,7 @@ export interface EffectiveSync {
   lastSync: Date | null;
   error: string | null;
   errorSource: string | null;
+  nearby: number;
 }
 
 const STATUS_RANK: Record<SyncStatus, number> = { idle: 0, success: 1, syncing: 2, offline: 3, error: 4 };
@@ -132,11 +133,16 @@ export function buildSyncProviders(inputs: SyncProviderInputs): SyncProviderView
   return [voltiusProvider(inputs.voltius), ...plugins];
 }
 
-export function aggregateSyncStatus(providers: SyncProviderView[]): EffectiveSync {
+export function isNearbyOnly(sync: EffectiveSync): boolean {
+  return sync.nearby > 0 && sync.status !== "error" && (!sync.configured || sync.status === "offline");
+}
+
+export function aggregateSyncStatus(providers: SyncProviderView[], nearby = 0): EffectiveSync {
   const active = providers.filter((p) => p.availability === "active");
   if (active.length === 0) {
     const voltius = providers.find((p) => p.id === VOLTIUS_PROVIDER_ID);
-    const fallback = voltius?.state ?? NOT_CONFIGURED_SYNC_STATE;
+    // A free account's login sync ends in a 402; that is the plan, not a sync failure.
+    const fallback = voltius && voltius.availability !== "needs_upgrade" ? voltius.state : NOT_CONFIGURED_SYNC_STATE;
     return {
       configured: false,
       paused: voltius?.availability === "paused",
@@ -144,6 +150,7 @@ export function aggregateSyncStatus(providers: SyncProviderView[]): EffectiveSyn
       lastSync: fallback.lastSync,
       error: fallback.error,
       errorSource: null,
+      nearby,
     };
   }
   const worst = active.reduce((w, p) => (STATUS_RANK[p.state.status] > STATUS_RANK[w.state.status] ? p : w));
@@ -159,6 +166,7 @@ export function aggregateSyncStatus(providers: SyncProviderView[]): EffectiveSyn
     lastSync,
     error: failing || worst.state.status === "offline" ? worst.state.error : null,
     errorSource: failing ? worst.label : null,
+    nearby,
   };
 }
 
