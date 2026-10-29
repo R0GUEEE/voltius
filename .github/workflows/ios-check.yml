@@ -1,0 +1,40 @@
+name: ios-check
+
+# Fast compile gate for the iOS target. The full .ipa build lives in ios.yml;
+# this job exists so a cfg mistake surfaces in minutes instead of after a
+# 25-minute Xcode build.
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/ios]
+    paths:
+      - 'src-tauri/**'
+      - 'Cargo.lock'
+      - '.github/workflows/ios-check.yml'
+
+jobs:
+  check:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned by rust-toolchain.toml)
+        run: |
+          rustup show
+          rustup target add aarch64-apple-ios
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: cargo check (aarch64-apple-ios)
+        run: |
+          set -o pipefail
+          cargo check --target aarch64-apple-ios -p voltius --lib 2>&1 | tee ios-check.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-check-log
+          path: ios-check.log
+          retention-days: 7
