@@ -20,9 +20,8 @@ on:
       - 'Cargo.lock'
       - '.github/workflows/ios.yml'
 
-concurrency:
-  group: ios-${{ github.ref }}
-  cancel-in-progress: true
+# No cancel-in-progress: a queued macOS runner is expensive, and a re-run
+# started while an earlier build is still archiving only kills good work.
 
 jobs:
   ipa:
@@ -55,6 +54,11 @@ jobs:
         run: |
           command -v xcodegen > /dev/null || brew install xcodegen
           command -v pod > /dev/null || brew install cocoapods
+
+      # `ios build` requires gen/apple to exist (`ensure_init`) — it does not
+      # generate it. `ios init` is a no-op cost of ~10 s and is idempotent.
+      - name: Generate the Xcode project
+        run: pnpm tauri ios init --ci
 
       - name: Build (unsigned archive)
         run: |
