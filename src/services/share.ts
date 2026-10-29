@@ -3,12 +3,16 @@ import { snippetScriptText } from "@/services/snippetSteps";
 import type { Snippet } from "@/types";
 
 /**
- * Outgoing Android share sheet. The native side (ShareSheet.kt, `window.VoltiusShare`) builds
- * an ACTION_SEND / ACTION_SEND_MULTIPLE intent and opens the system chooser. Files go through
- * the app FileProvider with a read grant, and only from the share staging folders under the
- * app cache (`voltius-downloads/share-*`, see `shareStageId`); the native side refuses any
- * other path and prunes old staged files. Everywhere without the bridge (desktop, web,
- * tests) `canShare()` is false and nothing is offered.
+ * Outgoing share sheet.
+ *   - Android: the native side (ShareSheet.kt, `window.VoltiusShare`) builds an ACTION_SEND /
+ *     ACTION_SEND_MULTIPLE intent and opens the system chooser. Files go through the app
+ *     FileProvider with a read grant, and only from the share staging folders under the app
+ *     cache (`voltius-downloads/share-*`, see `shareStageId`); the native side refuses any
+ *     other path and prunes old staged files.
+ *   - iOS: the WKWebView handler `window.webkit.messageHandlers.voltiusShare` receives
+ *     `{ kind: "text" | "files", text, paths, mime, title }` and raises a UIActivityViewController
+ *     (the app container is readable, so any temp path can be shared).
+ * Everywhere without a bridge (desktop, web, tests) `canShare()` is false and nothing is offered.
  *
  * What gets shared is decided here, by pure helpers, so it is unit-tested: a key's OpenSSH
  * public line only (never the private half), a snippet's command text, remote files.
@@ -18,14 +22,22 @@ type Bridge = {
   shareText(text: string, title: string): boolean;
   shareFiles(pathsJson: string, mime: string, title: string): boolean;
 };
-type ShareWindow = Window & { VoltiusShare?: Bridge };
+/** WKScriptMessageHandler exposed by the iOS shell. */
+type WebkitBridge = { postMessage(message: unknown): void };
+type ShareWindow = Window & {
+  VoltiusShare?: Bridge;
+  webkit?: { messageHandlers?: { voltiusShare?: WebkitBridge } };
+};
 
 const bridge = (): Bridge | undefined =>
   typeof window === "undefined" ? undefined : (window as ShareWindow).VoltiusShare;
 
-/** True where a system share sheet can be opened (the Android shell). */
+const webkitBridge = (): WebkitBridge | undefined =>
+  typeof window === "undefined" ? undefined : (window as ShareWindow).webkit?.messageHandlers?.voltiusShare;
+
+/** True where a system share sheet can be opened (Android or iOS shell). */
 export function canShare(): boolean {
-  return !!bridge();
+  return !!bridge() || !!webkitBridge();
 }
 
 /** Text larger than this would overflow the Binder transaction that carries the intent. */
@@ -112,27 +124,39 @@ function untilBack(): Promise<void> {
   });
 }
 
-function open(call: (b: Bridge) => boolean): boolean {
+/** Open the share sheet: the Android bridge first, else the iOS message handler. */
+function open(call: (b: Bridge) => boolean, post: (h: WebkitBridge) => unknown): boolean {
   const b = bridge();
-  if (!b) return false;
-  let ok = false;
+  const wk = b ? undefined : webkitBridge();
+  if (!b && !wk) return false;
   try {
-    ok = call(b) === true;
+    if (b) {
+      if (call(b) !== true) return false;
+    } else {
+      void post(wk!);
+    }
   } catch {
     return false;
   }
-  if (ok) void withLeaveLockSuppressed(untilBack);
-  return ok;
+  void withLeaveLockSuppressed(untilBack);
+  return true;
 }
 
 /** Open the share sheet for plain text. False if it could not be opened. */
 export function shareText(text: string, title = ""): boolean {
   if (!text || text.length > MAX_SHARE_TEXT) return false;
-  return open((b) => b.shareText(text, title));
+  return open(
+    (b) => b.shareText(text, title),
+    (h) => h.postMessage({ kind: "text", text, title }),
+  );
 }
 
 /** Open the share sheet for staged files (absolute paths from `downloadTempPath(shareStageId(..))`). */
 export function shareFiles(paths: string[], names: string[], title = ""): boolean {
   if (paths.length === 0) return false;
-  return open((b) => b.shareFiles(JSON.stringify(paths), shareMime(names), title));
+  const mime = shareMime(names);
+  return open(
+    (b) => b.shareFiles(JSON.stringify(paths), mime, title),
+    (h) => h.postMessage({ kind: "files", paths, mime, title }),
+  );
 }

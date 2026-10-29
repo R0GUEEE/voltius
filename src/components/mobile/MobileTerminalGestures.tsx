@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import { getTerminalApi } from "@/hooks/useTerminal";
 import { sendSpecialKey } from "@/services/terminalInput";
 import { showAndroidKeyboard, hideAndroidKeyboard, setAndroidKeyboardTarget, setSelectionTouchFeed } from "@/services/androidKeyboard";
-import { useIsAndroid } from "@/utils/platform";
+import { hideIOSKeyboard, showIOSKeyboard } from "@/services/iosKeyboard";
+import { useIsAndroid, usePlatform } from "@/utils/platform";
 import { isDoubleTap, type TapPoint } from "./doubleTap";
 import { fontSizeFromPinch, linesFromPixelDelta, touchDistance } from "./mobileTerminalGesturesCore";
 import { createNativeSelection } from "./nativeSelectionOverlay";
@@ -30,6 +31,7 @@ const sessionIds = () => useSessionStore.getState().sessions.filter((s) => s.typ
 export default function MobileTerminalGestures({ sessionId, active }: { sessionId: string; active: boolean }) {
   const { t } = useTranslation();
   const isAndroid = useIsAndroid();
+  const isIOS = usePlatform() === "ios";
   const rootRef = useRef<HTMLDivElement>(null);
   const [hintKey, setHintKey] = useState(0);
   const [paste, setPaste] = useState<{ x: number; y: number } | null>(null);
@@ -143,6 +145,7 @@ export default function MobileTerminalGestures({ sessionId, active }: { sessionI
           phase.current = "native";
           sel.arm();
           if (isAndroid) hideAndroidKeyboard(true);
+          else if (isIOS) hideIOSKeyboard();
         } else {
           showPaste(start.current.x, start.current.y);
         }
@@ -259,9 +262,11 @@ export default function MobileTerminalGestures({ sessionId, active }: { sessionI
           }
           lastTap.current = now;
         }
-        // Plain tap: xterm's textarea has inputmode=none on Android, so raise the native
-        // keyboard overlay ourselves (idempotent; see services/androidKeyboard.ts).
+        // Plain tap: on Android xterm's textarea has inputmode=none, so raise the native
+        // keyboard overlay ourselves (see services/androidKeyboard.ts); on iOS the textarea is
+        // the IME, so focusing it is enough (see services/iosKeyboard.ts).
         if (isAndroid) showAndroidKeyboard(sessionId);
+        else if (isIOS) showIOSKeyboard(sessionId);
       }
       reset();
     };
@@ -294,13 +299,21 @@ export default function MobileTerminalGestures({ sessionId, active }: { sessionI
   // Route native IME input to the active session; dismiss the keyboard when this terminal is
   // no longer the active one.
   useEffect(() => {
-    if (!isAndroid) return;
-    if (active) setAndroidKeyboardTarget(sessionId);
-    else hideAndroidKeyboard();
-    // Unmount (e.g. session disconnects while keyboard up) must dismiss too, else hide() never
-    // runs and the WebView stays non-focusable app-wide (#34).
-    return () => { hideAndroidKeyboard(); };
-  }, [active, sessionId, isAndroid]);
+    if (isAndroid) {
+      if (active) setAndroidKeyboardTarget(sessionId);
+      else hideAndroidKeyboard();
+      // Unmount (e.g. session disconnects while keyboard up) must dismiss too, else hide() never
+      // runs and the WebView stays non-focusable app-wide (#34).
+      return () => { hideAndroidKeyboard(); };
+    }
+    if (isIOS) {
+      // No native overlay to retarget on iOS: only drop the keyboard when this terminal stops
+      // being the active one (or unmounts).
+      if (!active) hideIOSKeyboard();
+      return () => { hideIOSKeyboard(); };
+    }
+    return undefined;
+  }, [active, sessionId, isAndroid, isIOS]);
 
   useEffect(() => { pasteOpen.current = paste !== null; }, [paste]);
 

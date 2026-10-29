@@ -7,7 +7,10 @@ edition = "2021"
 
 [lib]
 name = "voltius_lib"
-crate-type = ["cdylib", "rlib"]
+# `staticlib` is what the iOS/Xcode target links against (the "Build Rust Code"
+# phase looks for target/aarch64-apple-ios/release/libvoltius_lib.a); `cdylib` is
+# the Android `.so`; `rlib` is what the desktop binary and the tests link.
+crate-type = ["staticlib", "cdylib", "rlib"]
 
 # NOTE: profiles are defined at the workspace root (Cargo.toml). Cargo ignores
 # `[profile.*]` in non-root members, so they must not live here.
@@ -76,7 +79,6 @@ fontdb = { version = "0.24", default-features = false, features = ["fs", "memmap
 bollard = "0.21"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-serialport = { version = "4", default-features = false }
 aes = "0.9"
 cfb8 = "0.9"
 cbc = { version = "0.2", features = ["block-padding"] }
@@ -127,6 +129,17 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSError"] }
 objc2-local-authentication = { version = "0.3", features = ["LAContext", "LAError", "block2"] }
 block2 = "0.6"
+[target.'cfg(target_os = "ios")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["protected"] }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSError"] }
+objc2-local-authentication = { version = "0.3", features = ["LAContext", "LAError", "block2"] }
+block2 = "0.6"
+
+# iOS has no `keychain` (macOS-style) store: the data-protection keychain is the
+# only one an app can reach, and it is what `protected` exposes. `objc2-*` and
+# `block2` back `system_auth::ios` (LAContext) and the identifierForVendor
+# machine fingerprint, exactly as they back the macOS backend.
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
@@ -144,3 +157,9 @@ tempfile = "3"
 # Paused clock, so stall-watchdog tests skip the real 15 s wait.
 tokio = { version = "1", features = ["test-util"] }
 vt100 = "0.16"
+
+# `serialport`'s Darwin backend links IOKit (IOServiceMatching / kIOMasterPortDefault),
+# which iOS does not export — the app would fail at link time. `serial::connect_ios`
+# answers the same commands with a refusal on iOS instead.
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+serialport = { version = "4", default-features = false }

@@ -1001,19 +1001,31 @@ export function useTerminal({ sessionId, sessionType, onClosed, inputGate, encod
 
       // Android: stop xterm's hidden textarea from summoning the WebView's own (broken) IME —
       // a native overlay owns the soft keyboard instead (see services/androidKeyboard.ts, #34).
+      // iOS: the WKWebView keyboard *is* the IME, so the textarea stays editable — it only needs
+      // the smart-punctuation / autocorrect behaviour turned off (see services/iosKeyboard.ts).
       void getPlatform().then((os) => {
-        if (os !== "android") return;
+        if (os !== "android" && os !== "ios") return;
         const ta = term.element?.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea");
         if (!ta) return;
-        // Keep xterm's textarea from ever becoming a live IME target: inputmode=none stops it
-        // summoning the WebView's own (broken) keyboard, readOnly stops Chromium binding an
-        // editable InputConnection to it. The native overlay is the sole editor; input is fed
-        // back via window.__voltiusTermInput (see services/androidKeyboard.ts, #34).
-        ta.readOnly = true;
-        ta.setAttribute("inputmode", "none");
+        if (os === "android") {
+          // Keep xterm's textarea from ever becoming a live IME target: inputmode=none stops it
+          // summoning the WebView's own (broken) keyboard, readOnly stops Chromium binding an
+          // editable InputConnection to it. The native overlay is the sole editor; input is fed
+          // back via window.__voltiusTermInput (see services/androidKeyboard.ts, #34).
+          ta.readOnly = true;
+          ta.setAttribute("inputmode", "none");
+          ta.setAttribute("autocorrect", "off");
+          ta.setAttribute("autocapitalize", "off");
+          ta.setAttribute("autocomplete", "off");
+          ta.spellcheck = false;
+          return;
+        }
+        // iOS keeps the textarea live (readOnly / inputmode=none would block the WKWebView
+        // keyboard): only disable the input aids a terminal never wants.
         ta.setAttribute("autocorrect", "off");
-        ta.setAttribute("autocapitalize", "off");
-        ta.setAttribute("autocomplete", "off");
+        ta.setAttribute("autocapitalize", "none");
+        ta.setAttribute("spellcheck", "false");
+        ta.setAttribute("inputmode", "text");
         ta.spellcheck = false;
       });
 

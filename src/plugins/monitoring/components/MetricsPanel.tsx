@@ -7,11 +7,12 @@ import { MetricCard } from "./MetricCard";
 import { DiskSection } from "./DiskSection";
 import { SystemInfoSection } from "./SystemInfoSection";
 
-/** Android can't read host metrics (/proc is restricted) — only remote (SSH). No
- *  host platform primitive is exposed to plugins, so this checks the WebView UA
- *  directly; it is UX gating only, same as the host's own useIsAndroid. */
-function isAndroidPlatform(): boolean {
-  return typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
+/** The mobile sandboxes (Android and iOS) can't read host metrics (/proc is
+ *  restricted) — only remote (SSH). No host platform primitive is exposed to plugins,
+ *  so this checks the WebView UA directly; it is UX gating only, same as the host's
+ *  own isMobileOS. */
+function isMobilePlatform(): boolean {
+  return typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
 
 function fmtBytes(n: number): string {
@@ -29,8 +30,8 @@ export function createMetricsPanel(api: PluginAPI, hub: HostMetricsHub): FC {
   return function MetricsPanel() {
     const t = useT(api);
     const activeSession = useActiveSession(api);
-    const isAndroid = isAndroidPlatform();
-    const localUnsupported = isAndroid && !!activeSession && activeSession.type !== "ssh";
+    const isMobile = isMobilePlatform();
+    const localUnsupported = isMobile && !!activeSession && activeSession.type !== "ssh";
 
     const { snap, disks, disksLoading, cpuH, memH, rxH, txH } = useHostMetrics(
       hub,

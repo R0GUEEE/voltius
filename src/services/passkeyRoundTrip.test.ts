@@ -9,7 +9,11 @@ const h = vi.hoisted(() => ({
 vi.mock("@/i18n", () => ({ default: { t: (k: string) => k } }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: h.openUrl }));
 vi.mock("@/lib/invoke", () => ({ invoke: h.invoke }));
-vi.mock("@/utils/platform", () => ({ getPlatform: async () => h.platform }));
+vi.mock("@/utils/platform", async (orig) => ({
+  ...(await orig<object>()),
+  getPlatform: async () => h.platform,
+  isMobileOS: (p: string | null) => p === "android" || p === "ios",
+}));
 
 import {
   PasskeyCancelledError, acceptPasskeyReturn, cancelPasskeyRoundTrip, passkeyRoundTrip, type PasskeyReturn,

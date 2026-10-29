@@ -2,20 +2,22 @@ use serde::Serialize;
 
 #[cfg(target_os = "android")]
 pub mod android;
+// LocalAuthentication is the same framework on macOS and iOS (LAContext +
+// evaluatePolicy); only the enrolment UI differs, so one module serves both.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+mod apple;
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
 pub mod seal;
 #[cfg(target_os = "windows")]
 mod windows;
 
 #[cfg(target_os = "android")]
 use android as backend;
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+use apple as backend;
 #[cfg(target_os = "linux")]
 use linux as backend;
-#[cfg(target_os = "macos")]
-use macos as backend;
 #[cfg(target_os = "windows")]
 use windows as backend;
 

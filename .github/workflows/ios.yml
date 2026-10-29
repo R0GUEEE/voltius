@@ -1,0 +1,140 @@
+name: ios
+
+# Builds an unsigned iOS .ipa on a macOS runner.
+#
+# `tauri ios build --no-sign --archive-only` is used rather than a bare
+# xcodebuild: it generates gen/apple from project.yml, merges
+# src-tauri/Info.ios.plist into the app's Info.plist (xcodebuild alone does not
+# — that merge lives in `ios build`/`ios dev`), and drives the same
+# "Build Rust Code" phase that runs `cargo build --target aarch64-apple-ios`.
+# `--no-sign` keeps Xcode from demanding a team; the resulting .app is unsigned,
+# so it is zipped into Payload/ here and re-signed by whatever sideloader the
+# user runs (SideStore, AltStore, Sideloadly, TrollStore).
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/ios]
+    paths:
+      - 'src-tauri/**'
+      - 'src/**'
+      - 'Cargo.lock'
+      - '.github/workflows/ios.yml'
+
+# No cancel-in-progress: a queued macOS runner is expensive, and a re-run
+# started while an earlier build is still archiving only kills good work.
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - name: Install Rust (pinned by rust-toolchain.toml) + iOS target
+        run: |
+          rustup show
+          rustup target add aarch64-apple-ios
+
+      # CACHE_ON_FAILURE: a failed archive still leaves ~15 minutes of compiled
+      # release dependencies behind; throwing them away doubles the next attempt.
+      - uses: swatinem/rust-cache@v2
+        env:
+          CACHE_ON_FAILURE: true
+        with:
+          workspaces: '. -> target'
+          key: ios
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Ensure xcodegen and cocoapods
+        run: |
+          command -v xcodegen > /dev/null || brew install xcodegen
+          command -v pod > /dev/null || brew install cocoapods
+
+      # `ios build` requires gen/apple to exist (`ensure_init`) — it does not
+      # generate it. `ios init` is a no-op cost of ~10 s and is idempotent.
+      - name: Generate the Xcode project
+        run: pnpm tauri ios init --ci
+
+      - name: Build (unsigned archive)
+        run: |
+          set -o pipefail
+          pnpm tauri ios build --no-sign --archive-only --ci 2>&1 | tee ios-build.log
+
+      - name: Locate the archive
+        id: archive
+        run: |
+          set -euo pipefail
+          ARCHIVE=$(find src-tauri/gen/apple -maxdepth 6 -name '*.xcarchive' -type d | head -n 1)
+          test -n "$ARCHIVE" || { echo "no .xcarchive produced"; exit 1; }
+          APP=$(find "$ARCHIVE/Products/Applications" -maxdepth 1 -name '*.app' | head -n 1)
+          test -n "$APP" || { echo "no .app inside $ARCHIVE"; exit 1; }
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist"
+
+      # A silently missing NSLocalNetworkUsageDescription only shows up on a
+      # device, as "Voltius cannot reach my server": iOS 14+ refuses every LAN
+      # socket until the prompt is shown, and the prompt needs this string.
+      - name: Verify the bundled Info.plist
+        run: |
+          python3 - <<'PY'
+          import os, plistlib, sys
+          app = os.environ["APP"]
+          with open(os.path.join(app, "Info.plist"), "rb") as f:
+              info = plistlib.load(f)
+          required = [
+              "NSLocalNetworkUsageDescription",
+              "NSFaceIDUsageDescription",
+              "ITSAppUsesNonExemptEncryption",
+              "UIFileSharingEnabled",
+          ]
+          missing = [k for k in required if k not in info]
+          if missing:
+              sys.exit(f"Info.plist is missing {missing}")
+          print(f"all {len(required)} required keys present; {len(info)} keys total")
+          PY
+        env:
+          APP: ${{ steps.archive.outputs.app }}
+
+      - name: Package the .ipa
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          rm -rf build/Payload build/*.ipa
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+          # -D: no explicit directory entries. Several sideloaders mis-derive the
+          # bundle root when every zip entry is a directory.
+          (cd build && zip -qry -D Voltius-ios-unsigned.ipa Payload)
+          ls -l build/Voltius-ios-unsigned.ipa
+          shasum -a 256 build/Voltius-ios-unsigned.ipa | tee build/Voltius-ios-unsigned.ipa.sha256
+        env:
+          APP: ${{ steps.archive.outputs.app }}
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: voltius-ios-ipa
+          path: |
+            build/Voltius-ios-unsigned.ipa
+            build/Voltius-ios-unsigned.ipa.sha256
+          retention-days: 30
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voltius-ios-build-log
+          path: ios-build.log
+          retention-days: 7
+          if-no-files-found: ignore

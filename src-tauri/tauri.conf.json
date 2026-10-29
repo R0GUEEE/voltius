@@ -56,6 +56,10 @@
     "macOS": {
       "signingIdentity": "-"
     },
+    "iOS": {
+      "minimumSystemVersion": "15.0",
+      "infoPlist": "Info.ios.plist"
+    },
     "linux": {
       "deb": {
         "depends": [

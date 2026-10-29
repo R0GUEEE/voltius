@@ -11,7 +11,7 @@ import { accelFor, tarMode } from "@/components/filetransfer/tarSupport";
 import { PermissionsDialog } from "@/components/filetransfer/PermissionsDialog";
 import { canEditPermissions } from "@/components/filetransfer/permissionsModel";
 import { transferItem } from "@/services/sftpTransferCore";
-import { useIsAndroid } from "@/utils/platform";
+import { useIsAndroid, useIsMobile } from "@/utils/platform";
 import { downloadDirGet, downloadDirPick, downloadTempPath, downloadPublish } from "@/services/downloads";
 import { needsPicker } from "@/components/terminal/androidDownloadDir";
 import { useTransferQueueStore } from "@/stores/transferQueueStore";
@@ -29,6 +29,8 @@ import { sharedAxisPlan, useSwapThrough } from "@/hooks/pageTransition";
 import { PullIndicator, usePullToRefresh } from "../usePullToRefresh";
 import { allSelected, pruneSelection, toggleAll, toggleItem } from "./sftpSelectionCore";
 import { canShare, shareFiles, shareStageId, shareTotalBytes, shareableFiles, SHARE_CONFIRM_BYTES } from "@/services/share";
+import { fsCopy } from "@/services/sftp";
+import { saveSystemDialog } from "@/services/systemDialog";
 
 // Coded errors arrive translated, so only an uncoded one is matched by its English text.
 function isPermissionDenied(msg: string, code: BackendErrorCode | null): boolean {
@@ -38,6 +40,22 @@ function isPermissionDenied(msg: string, code: BackendErrorCode | null): boolean
 }
 
 type Controller = ReturnType<typeof useSftpDir>;
+
+/**
+ * iOS: put a finished temp download where the user wants it. The app container is not a place
+ * the user browses, so the file goes through the system save sheet (fs_copy to the chosen path);
+ * where no save sheet exists the file is offered through the share sheet instead.
+ */
+async function saveIOSDownload(tmp: string, name: string, transferId: string): Promise<void> {
+  try {
+    const dest = await saveSystemDialog({ defaultPath: name });
+    if (dest) await fsCopy(tmp, dest, transferId);
+    return; // cancelled: the temp copy stays in the app cache
+  } catch {
+    // No usable save sheet on this device — fall through to sharing the temp file.
+  }
+  if (!shareFiles([tmp], [name], name)) throw new Error("could not save the file");
+}
 
 /**
  * One remote pane. Tap a folder to open it, a file (or its ⋮) for its actions sheet;
@@ -64,6 +82,8 @@ export default function MobileSftpPane({
   const { phase, retrying, sftpId, cwd, entries, listing, landedCwd, listError, listErrorCode, navigate, goUp, refresh, reconnect, mkdir, touch, rename, remove } = controller;
   const runTransfer = useTransferQueueStore((s) => s.runTransfer);
   const isAndroid = useIsAndroid();
+  const isMobile = useIsMobile();
+  const isIOS = isMobile && !isAndroid;
   const [showHidden, setShowHidden] = useState(false);
   const [sheetFor, setSheetFor] = useState<FileEntry | null>(null);
   const [renaming, setRenaming] = useState<FileEntry | null>(null);
@@ -156,12 +176,22 @@ export default function MobileSftpPane({
       }, undefined, accelFor(mode, f.isDir));
       return;
     }
+    // iOS: there is no SAF tree and no user-visible writable folder — stream to a temp path and
+    // then hand the file to the system save sheet (never to download_dir_pick/download_publish).
+    if (isIOS) {
+      await runTransfer(f.name, "←", async (tid) => {
+        const tmp = await downloadTempPath(tid, f.name);
+        await fetchTo(tmp, tid);
+        await saveIOSDownload(tmp, f.name, tid);
+      }, undefined, accelFor(mode, f.isDir));
+      return;
+    }
     await runTransfer(f.name, "←", async (tid) => fetchTo(joinPath(await appCacheDir(), f.name), tid), undefined, accelFor(mode, f.isDir));
   };
 
   // Share: the files download into the share staging folder (with the usual transfer cards),
   // then the system chooser gets them. Large sets ask first. Folders can't be shared.
-  const canShareFiles = isAndroid && canShare();
+  const canShareFiles = isMobile && canShare();
   const share = async (items: FileEntry[], confirmed = false) => {
     const files = shareableFiles(items);
     if (!sftpId || files.length === 0) return;

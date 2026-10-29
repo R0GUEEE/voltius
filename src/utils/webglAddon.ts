@@ -3,12 +3,15 @@ import { WebglAddon } from "@xterm/addon-webgl";
 
 const USER_AGENT = typeof navigator !== "undefined" ? navigator.userAgent : "";
 const ANDROID = /Android/i.test(USER_AGENT);
+// iOS WebKit has the same tight WebGL context budget as Android's Chromium WebView, so it takes
+// the mobile budget below (no host platform primitive here — the UA is all we have synchronously).
+const MOBILE = /Android|iPhone|iPad|iPod/i.test(USER_AGENT);
 // WebKitGTK presents a WebGL canvas one draw behind unless the buffer is preserved,
 // so terminal echo only appears on the next redraw (cursor blink, ~600 ms). #224
 const PRESERVE_DRAWING_BUFFER = /Linux/.test(USER_AGENT) && !ANDROID;
 
-// Engines kill the oldest WebGL context past 16 per page (8 on Android), leaving a dead canvas.
-const MAX_WEBGL_TERMINALS = ANDROID ? 8 : 14;
+// Engines kill the oldest WebGL context past 16 per page (8 on mobile), leaving a dead canvas.
+const MAX_WEBGL_TERMINALS = MOBILE ? 8 : 14;
 
 const pool = new Map<Terminal, PooledWebglAddon>();
 

@@ -4,7 +4,7 @@ import { useUIStore } from "@/stores/uiStore";
 import type { AppTheme } from "@/themes/types";
 import { terminalFontStack, withFlagEmojiFallback } from "@/utils/fontStack";
 import { appearanceFromColor, luminanceFromHex, prefersDarkForeground } from "@/utils/appearance";
-import { syncSystemBars } from "@/services/androidSystemBars";
+import { syncSystemBars } from "@/services/systemBars";
 import { useSystemColorsStore } from "@/services/androidSystemColors";
 
 export function applyThemeToDom(theme: AppTheme) {

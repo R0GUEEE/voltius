@@ -5,13 +5,16 @@ const h = vi.hoisted(() => ({
   platform: "android",
 }));
 vi.mock("@/lib/invoke", () => ({ invoke: h.invoke }));
-vi.mock("@/utils/platform", () => ({ getPlatform: () => Promise.resolve(h.platform) }));
+vi.mock("@/utils/platform", () => ({
+  getPlatform: () => Promise.resolve(h.platform),
+  isMobileOS: (p: string | null) => p === "android" || p === "ios",
+}));
 
-import { resetSystemBarsForTest, syncSystemBars } from "./androidSystemBars";
+import { resetSystemBarsForTest, syncSystemBars } from "./systemBars";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-describe("androidSystemBars", () => {
+describe("systemBars", () => {
   beforeEach(() => {
     h.invoke.mockClear();
     h.platform = "android";
@@ -42,6 +45,13 @@ describe("androidSystemBars", () => {
       ["set_system_bars", { lightBackground: false }],
       ["set_system_bars", { lightBackground: true }],
     ]);
+  });
+
+  it("pushes on iOS too", async () => {
+    h.platform = "ios";
+    syncSystemBars("#0f1729");
+    await flush();
+    expect(h.invoke.mock.calls).toEqual([["set_system_bars", { lightBackground: false }]]);
   });
 
   it("never invokes on desktop", async () => {

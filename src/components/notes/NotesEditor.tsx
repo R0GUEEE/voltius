@@ -10,7 +10,7 @@ import { useCmTheme } from "@/components/filetransfer/editor/useCmTheme";
 import { cmPopupChrome } from "@/components/filetransfer/editor/cmTheme";
 import { PickerSurface } from "@/components/shared/PickerSurface";
 import { MenuItemList } from "@/components/shared/ContextMenu";
-import { useIsAndroid } from "@/utils/platform";
+import { useIsMobile } from "@/utils/platform";
 import { NOTES_ICON_BUTTON, NotesEmptyState } from "./NotesChrome";
 import { NotesPreview } from "./NotesPreview";
 import {
@@ -153,7 +153,7 @@ export function NotesEditor({
   const requestModeRef = useRef(requestMode);
   requestModeRef.current = requestMode;
   const themeExt = useCmTheme();
-  const touch = useIsAndroid();
+  const touch = useIsMobile();
   const effectiveMode: NotesMode = readOnly ? "preview" : mode;
 
   useEffect(() => {

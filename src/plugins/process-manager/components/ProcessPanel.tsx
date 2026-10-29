@@ -10,11 +10,11 @@ import type { ProcessEntry, SortCol } from "../types";
 
 const ROW_H = 30;
 
-/** Android restricts /proc to the app's own process — only remote (SSH) works. No
- *  host platform primitive is exposed to plugins, so this checks the WebView UA
- *  directly; it is UX gating only, same as the host's own useIsAndroid. */
-function isAndroidPlatform(): boolean {
-  return typeof navigator !== "undefined" && /android/i.test(navigator.userAgent);
+/** The mobile sandboxes (Android and iOS) restrict /proc to the app's own process —
+ *  only remote (SSH) works. No host platform primitive is exposed to plugins, so this
+ *  checks the WebView UA directly; it is UX gating only, same as the host's own isMobileOS. */
+function isMobilePlatform(): boolean {
+  return typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 }
 
 function fmtMem(kb: number): string {
@@ -178,8 +178,8 @@ export function createProcessPanel(api: PluginAPI): FC {
   return function ProcessPanel() {
     const t = useT(api);
     const activeSession = useActiveSession(api);
-    const isAndroid = isAndroidPlatform();
-    const localUnsupported = isAndroid && !!activeSession && activeSession.type !== "ssh";
+    const isMobile = isMobilePlatform();
+    const localUnsupported = isMobile && !!activeSession && activeSession.type !== "ssh";
 
     const { snapshot, entries, filter, setFilter, sortCol, sortAsc, setSort, kill, killError, setKillError } =
       useProcessList(service, activeSession ?? undefined, localUnsupported);
