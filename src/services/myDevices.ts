@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import type { TFunction } from "i18next";
 import { useLanSyncStore } from "@/stores/lanSyncStore";
 import { getDeviceId } from "@/services/sync";
 import type { KnownDevice, LanRoute, PeerInfo } from "@/services/lanSyncDevices";
@@ -13,6 +14,10 @@ export interface MyDevice {
   state: MyDeviceState;
   route: LanRoute | null;
   lastSeen: string | null;
+}
+
+export function routeLabel(t: TFunction, route: LanRoute): string {
+  return t(`layout.sync.local.route.${route}`);
 }
 
 const byName = (a: MyDevice, b: MyDevice) => a.name.localeCompare(b.name);

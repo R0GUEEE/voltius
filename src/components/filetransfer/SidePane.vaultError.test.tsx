@@ -4,13 +4,15 @@ import { cleanup, render, screen } from "@testing-library/react";
 const h = vi.hoisted(() => ({ overlayProps: null as Record<string, unknown> | null }));
 
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (k: string) => k }),
+  useTranslation: () => ({ t: (k: string, o?: Record<string, unknown>) => (o ? `${k}:${Object.values(o).join(",")}` : k) }),
   initReactI18next: { type: "3rdParty", init: () => {} },
 }));
 vi.mock("@iconify/react", () => ({ Icon: () => null }));
 vi.mock("@/utils/icons", () => ({
   getConnectionIcon: () => "lucide:server",
   getConnectionIconColor: () => "#fff",
+  deviceIcon: () => "lucide:monitor",
+  DEVICE_TILE_BASE: "#000",
 }));
 vi.mock("@/components/shared/AvatarTile", () => ({
   AvatarTile: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
@@ -25,7 +27,8 @@ vi.mock("@/components/terminal/connection-overlay", () => ({
     h.overlayProps = p;
     return <div data-testid="overlay" />;
   },
-  getSftpSteps: () => [],
+  getSftpSteps: () => [{ id: "tcp_connected", label: "tcp" }],
+  getDeviceSteps: (name: string) => [{ id: "device_approval", label: `approval ${name}` }],
 }));
 
 import { SidePane } from "./SidePane";
@@ -71,4 +74,21 @@ test("an ordinary connect failure still shows its message and a retry", () => {
   expect(screen.getByText("Connection refused")).toBeTruthy();
   expect(screen.getByText("fileTransfer.side.tryAgain")).toBeTruthy();
   expect(h.overlayProps).toBeNull();
+});
+
+const device = {
+  kind: "device",
+  device: { deviceId: "d1", deviceKey: "k1", name: "Desktop-PC", platform: "linux", state: "ready", route: "tailscale", lastSeen: null },
+} as HostChoice;
+
+test("a device connect shows the device steps", () => {
+  render(<SidePane {...props} host={device} phase={{ tag: "connecting", connectId: "x1", host: device }} />);
+
+  expect(h.overlayProps).toMatchObject({ name: "Desktop-PC", steps: [{ id: "device_approval", label: "approval Desktop-PC" }] });
+});
+
+test("a connected device shows its route and latency", () => {
+  render(<SidePane {...props} host={device} phase={{ tag: "connected", sftpId: "s1", cwd: "/", selected: [], route: "tailscale", rttMs: 41 }} />);
+
+  expect(screen.getByText("fileTransfer.myDevices.routeChip:layout.sync.local.route.tailscale,41")).toBeTruthy();
 });

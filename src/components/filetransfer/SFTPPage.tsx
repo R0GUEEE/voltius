@@ -21,6 +21,9 @@ import { useTransferQueueStore } from "@/stores/transferQueueStore";
 import { useFileClipboardStore, type FileEndpoint } from "@/stores/fileClipboardStore";
 import { buildPasteDeps, executePaste } from "./pasteService";
 import { connectFileBackend } from "@/services/sftpTarget";
+import { connectDevice } from "@/services/deviceFiles";
+import { BackendError, type BackendErrorCode } from "@/services/backendErrors";
+import { hostPresentation } from "./hostPresentation";
 import { idToRelease, relinkOf } from "./sideRelink";
 import { cancelKnownHostPrompt } from "@/services/knownHosts";
 import { connectErrorPhase, useConnectRetry } from "@/hooks/useConnectRetry";
@@ -58,9 +61,11 @@ function useConnectionLoss(
   const sftpId = phase.tag === "connected" ? phase.sftpId : null;
   useEffect(() => {
     if (!sftpId) return;
-    const unlisten = listen(`sftp-closed-${sftpId}`, () => {
+    const unlisten = listen<{ code?: BackendErrorCode }>(`sftp-closed-${sftpId}`, ({ payload }) => {
+      const lost = t("fileTransfer.page.connectionLost");
+      const cause = payload?.code ? connectErrorPhase(new BackendError(payload.code, lost)) : { tag: "error" as const, message: lost };
       setPhase((p) => p.tag === "connected" && p.sftpId === sftpId
-        ? { tag: "error", message: t("fileTransfer.page.connectionLost"), host: host ?? undefined, lostSftpId: sftpId }
+        ? { ...cause, host: host ?? undefined, lostSftpId: sftpId }
         : p);
     });
     return () => { unlisten.then((fn) => fn()); };
@@ -118,6 +123,7 @@ export default function SFTPPage() {
     const isCurrent = () => currentConnect.current[side] === connectId;
     setPhase({ tag: "connecting", connectId, host });
     let sftpId: string | null = null;
+    let link: Pick<Extract<SidePhase, { tag: "connected" }>, "route" | "rttMs"> = {};
     try {
       let cwd = "/";
       if (host.kind === "local") {
@@ -125,8 +131,14 @@ export default function SFTPPage() {
       } else {
         opening.current[side] = connectId;
         try {
-          sftpId = await connectFileBackend(host.connection, connectId, true, relink);
-          useConnectionStore.getState().setLastUsed(host.connection.id).catch(() => {});
+          if (host.kind === "device") {
+            const opened = await connectDevice(host.device.deviceId, connectId, relink);
+            sftpId = opened.sftpId;
+            link = { route: host.device.route ?? undefined, rttMs: opened.rttMs };
+          } else {
+            sftpId = await connectFileBackend(host.connection, connectId, true, relink);
+            useConnectionStore.getState().setLastUsed(host.connection.id).catch(() => {});
+          }
         } finally {
           if (opening.current[side] === connectId) opening.current[side] = null;
         }
@@ -138,7 +150,7 @@ export default function SFTPPage() {
       }
       if (relink && sftpId !== relink) sftpClose(relink).catch(() => {});
       shownSftp.current[side] = sftpId;
-      setPhase({ tag: "connected", sftpId, cwd, selected: [] });
+      setPhase({ tag: "connected", sftpId, cwd, selected: [], ...link });
     } catch (e) {
       if (sftpId && sftpId !== relink) sftpClose(sftpId).catch(() => {});
       if (isCurrent()) setPhase({ ...connectErrorPhase(e), host, lostSftpId: relink });
@@ -406,7 +418,7 @@ export default function SFTPPage() {
   const { connectLocalAt, connectAt } = useSessionStore();
 
   const makeOpenInTerminal = useCallback((host: HostChoice | null) => {
-    if (!host || (host.kind === "remote" && isFileOnlyProtocol(host.connection))) return undefined;
+    if (!host || host.kind === "device" || (host.kind === "remote" && isFileOnlyProtocol(host.connection))) return undefined;
     return (path: string) => {
       if (host.kind === "local") {
         connectLocalAt(path).catch(() => {});
@@ -428,9 +440,7 @@ export default function SFTPPage() {
     : t("fileTransfer.page.selectFileRight");
 
   const hostLabelFor = (host: HostChoice | null) =>
-    host == null ? t("fileTransfer.common.remoteFallback")
-    : host.kind === "local" ? (host.wslDistro ?? t("fileTransfer.common.localMachine"))
-    : host.connection.name?.trim() || `${host.connection.username}@${host.connection.host}`;
+    host ? hostPresentation(host, t).name : t("fileTransfer.common.remoteFallback");
 
   const leftSingleFile  = leftSelected.length  === 1 && !leftSelected[0].isDir  ? leftSelected[0]  : null;
   const rightSingleFile = rightSelected.length === 1 && !rightSelected[0].isDir ? rightSelected[0] : null;

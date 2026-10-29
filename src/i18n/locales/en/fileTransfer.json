@@ -205,6 +205,17 @@
         "discard": "Discard",
         "diffTitle": "diff: {{name}}"
       }
+    },
+    "myDevices": {
+      "title": "My devices",
+      "fileAccessOff": "File access is off on this device",
+      "offlineSeen": "Offline · seen {{ago}}",
+      "offline": "Offline",
+      "routeChip": "{{route}} · {{ms}} ms"
+    },
+    "connect": {
+      "deviceDialing": "Connecting…",
+      "deviceApproval": "Waiting for approval on {{name}}…"
     }
   }
 }

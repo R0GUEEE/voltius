@@ -1,19 +1,20 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "@iconify/react";
 import { useTranslation } from "react-i18next";
-import { getConnectionIcon, getConnectionIconColor } from "@/utils/icons";
 import { AvatarTile } from "@/components/shared/AvatarTile";
 import { type HostChoice, type SidePhase, type FileEntry } from "./SFTPTypes";
 import { HostPickerPanel } from "@/components/shared/HostPickerPanel";
 import { FilePane } from "./FilePane";
-import ConnectionOverlay, { getSftpSteps } from "@/components/terminal/connection-overlay";
+import ConnectionOverlay, { getDeviceSteps, getSftpSteps } from "@/components/terminal/connection-overlay";
 import { FilterInput } from "@/components/shared/ToolbarViewControls";
 import { StatusDot } from "@/components/shared/StatusDot";
 import { useHostPingStore } from "@/stores/hostPingStore";
 import { latencyColor, latencyTone } from "@/utils/statusTone";
 import { useToggle } from "@/stores/toggleSettingsStore";
 import { isVaultErrorCode } from "@/services/vaultErrors";
+import { routeLabel } from "@/services/myDevices";
+import { hostPresentation } from "./hostPresentation";
 
 const SPARKLINE_MAX = 20;
 
@@ -27,24 +28,6 @@ function sparklinePoints(values: number[], width: number, height: number): strin
     const y = height - ((v - min) / range) * (height - 2) - 1;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
-}
-
-/** Icon, name and subtitle the connection overlay shows for a host. */
-function hostPresentation(h: HostChoice | null | undefined, t: (k: string) => string) {
-  if (!h) return { icon: "lucide:server", name: "", subtitle: undefined };
-  if (h.kind === "local") {
-    return {
-      icon: h.wslDistro ? getConnectionIcon(h.wslDistro.split(/[-_ ]/)[0]) : "lucide:monitor",
-      name: h.wslDistro ?? t("fileTransfer.common.localMachine"),
-      subtitle: undefined,
-    };
-  }
-  const c = h.connection;
-  return {
-    icon: (c.icon || c.distro ? getConnectionIcon(c.icon || c.distro!) : null) ?? "lucide:server",
-    name: c.name?.trim() || `${c.username}@${c.host}`,
-    subtitle: `${c.username}@${c.host}:${c.port}`,
-  };
 }
 
 export function SidePane({
@@ -76,22 +59,14 @@ export function SidePane({
   onPaste?: (dest: import("@/stores/fileClipboardStore").FileEndpoint) => void;
 }) {
   const { t } = useTranslation();
-  const hostLabel =
-    host == null ? null
-    : host.kind === "local" ? (host.wslDistro ?? t("fileTransfer.common.localMachine"))
-    : host.connection.name?.trim() || `${host.connection.username}@${host.connection.host}`;
-
-  const hostIcon =
-    host?.kind === "local" ? (host.wslDistro ? getConnectionIcon(host.wslDistro.split(/[-_ ]/)[0]) : "lucide:monitor")
-    : host?.kind === "remote" && (host.connection.icon || host.connection.distro) ? (getConnectionIcon(host.connection.icon || host.connection.distro!) ?? "lucide:server")
-    : "lucide:server";
-
-  const avatarBg =
-    host?.kind === "local" && host.wslDistro
-      ? (getConnectionIconColor(host.wslDistro.split(/[-_ ]/)[0]) ?? "var(--t-bg-card-avatar)")
-      : host?.kind === "remote" && (host.connection.icon || host.connection.distro)
-      ? (getConnectionIconColor(host.connection.icon || host.connection.distro!) ?? "var(--t-bg-card-avatar)")
-      : "var(--t-bg-card-avatar)";
+  const shown = host ? hostPresentation(host, t) : null;
+  const hostLabel = shown?.name ?? null;
+  const connectingHost = phase.tag === "connecting" ? phase.host : null;
+  const connectSteps = useMemo(() => (connectingHost?.kind === "device" ? getDeviceSteps(connectingHost.device.name) : getSftpSteps()), [connectingHost]);
+  const overlayHost = (h: HostChoice | null | undefined) => {
+    const p = h ? hostPresentation(h, t) : null;
+    return { icon: p?.icon ?? "lucide:server", name: p?.name ?? "", subtitle: p?.subtitle };
+  };
 
   // Includes connecting, so a slow or hung connect can be abandoned.
   const canChangeHost = phase.tag !== "picking";
@@ -187,13 +162,13 @@ export function SidePane({
           onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--t-border)"; e.currentTarget.style.background = "var(--t-bg-elevated)"; }}
         >
           <AvatarTile
-            base={host ? avatarBg : undefined}
+            base={shown?.base}
             className="rounded-md text-white"
             style={{ width: "1.333rem", height: "1.333rem", ...(host ? {} : { background: "var(--t-bg-input)", boxShadow: "none" }) }}
           >
             {phase.tag === "connecting"
               ? <Icon icon="lucide:loader-circle" width={11} className="animate-spin" />
-              : <Icon icon={hostIcon} width={11} />
+              : <Icon icon={shown?.icon ?? "lucide:server"} width={11} />
             }
           </AvatarTile>
           <span className="text-xs font-medium pr-0.5" style={{ color: hostLabel ? "var(--t-text-primary)" : "var(--t-text-dim)" }}>
@@ -212,6 +187,15 @@ export function SidePane({
           >
             <StatusDot tone={latencyTone(latencyMs)} size="sm" />
             <span style={{ color: latencyColor(latencyMs), fontVariantNumeric: "tabular-nums" }}>{latencyMs}ms</span>
+          </div>
+        )}
+
+        {phase.tag === "connected" && phase.route && phase.rttMs !== undefined && (
+          <div data-route-chip className="flex items-center gap-1 px-1 cursor-default" style={{ fontSize: 11 }}>
+            <StatusDot tone={latencyTone(phase.rttMs)} size="sm" />
+            <span style={{ color: latencyColor(phase.rttMs), fontVariantNumeric: "tabular-nums" }}>
+              {t("fileTransfer.myDevices.routeChip", { route: routeLabel(t, phase.route), ms: phase.rttMs })}
+            </span>
           </div>
         )}
 
@@ -259,14 +243,14 @@ export function SidePane({
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-hidden">
-        {phase.tag === "picking" && <HostPickerPanel onPick={onPick} sshOnly />}
+        {phase.tag === "picking" && <HostPickerPanel onPick={onPick} sshOnly devices />}
 
         {phase.tag === "connecting" && (
           <ConnectionOverlay
             sessionId={phase.connectId}
             status="connecting"
-            {...hostPresentation(phase.host, t)}
-            steps={getSftpSteps()}
+            {...overlayHost(phase.host)}
+            steps={connectSteps}
             stepEventName={`sftp-step-${phase.connectId}`}
             conflictEventName={`sftp-host-key-conflict-${phase.connectId}`}
             className="flex items-center justify-center h-full bg-(--t-bg-base)"
@@ -281,7 +265,7 @@ export function SidePane({
             status="error"
             errorMessage={phase.message}
             errorCode={phase.errorCode}
-            {...hostPresentation(phase.host ?? host, t)}
+            {...overlayHost(phase.host ?? host)}
             steps={getSftpSteps()}
             stepEventName={`sftp-step-error-${side}`}
             onRetry={onChangeHost}

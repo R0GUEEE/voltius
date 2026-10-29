@@ -204,6 +204,17 @@
         "discard": "放弃",
         "diffTitle": "差异：{{name}}"
       }
+    },
+    "myDevices": {
+      "title": "我的设备",
+      "fileAccessOff": "此设备已关闭文件访问",
+      "offlineSeen": "离线 · 上次在线 {{ago}}",
+      "offline": "离线",
+      "routeChip": "{{route}} · {{ms}} 毫秒"
+    },
+    "connect": {
+      "deviceDialing": "正在连接…",
+      "deviceApproval": "正在等待 {{name}} 上的批准…"
     }
   }
 }

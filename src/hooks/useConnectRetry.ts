@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef } from "react";
 import i18n from "@/i18n";
-import { connectRetryDelay, STABLE_CONNECTION_MS } from "@/stores/reconnectBackoffCore";
+import { connectRetryDelay, STABLE_CONNECTION_MS, stopsRetrying } from "@/stores/reconnectBackoffCore";
 import { backendErrorCode, describeError, type BackendErrorCode } from "@/services/backendErrors";
 import { identityPickIssueOf } from "@/services/credentialPlan";
 
 type RetryPhase = { tag: string; message?: string; errorCode?: BackendErrorCode; final?: boolean };
 
 export function connectErrorPhase(e: unknown) {
-  return { tag: "error" as const, message: describeError(e, i18n.t), errorCode: backendErrorCode(e) ?? undefined, final: !!identityPickIssueOf(e) };
+  const errorCode = backendErrorCode(e) ?? undefined;
+  return { tag: "error" as const, message: describeError(e, i18n.t), errorCode, final: !!identityPickIssueOf(e) || stopsRetrying(undefined, errorCode) };
 }
 
 /** Re-run `retry` on the reconnect backoff while `phase` is a retryable error. The schedule
