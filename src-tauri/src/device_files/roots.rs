@@ -49,6 +49,15 @@ fn is_host_specific(seg: &str) -> bool {
         || seg.contains(std::path::MAIN_SEPARATOR)
 }
 
+fn confine(canon_root: &Path, p: &Path, missing: Jail) -> Result<PathBuf, Jail> {
+    let real = p.canonicalize().map_err(|_| missing)?;
+    if real.starts_with(canon_root) {
+        Ok(real)
+    } else {
+        Err(Jail::Outside)
+    }
+}
+
 impl SharedRoots {
     pub fn new(folders: &[PathBuf]) -> Self {
         let mut roots: Vec<Root> = Vec::with_capacity(folders.len());
@@ -98,13 +107,11 @@ impl SharedRoots {
         if rest.is_empty() {
             return Ok(Resolved::Root(root));
         }
-        let target = canon
-            .join(rest.iter().collect::<PathBuf>())
-            .canonicalize()
-            .map_err(|_| Jail::NotFound)?;
-        if !target.starts_with(&canon) {
-            return Err(Jail::Outside);
-        }
+        let target = confine(
+            &canon,
+            &canon.join(rest.iter().collect::<PathBuf>()),
+            Jail::NotFound,
+        )?;
         Ok(Resolved::Inside { root, path: target })
     }
 
@@ -116,19 +123,14 @@ impl SharedRoots {
         let (parent_comps, leaf) = comps.split_at(comps.len() - 1);
         let leaf = leaf[0];
         let (root, canon, rest) = self.locate(parent_comps)?;
-        let parent = canon
-            .join(rest.iter().collect::<PathBuf>())
-            .canonicalize()
-            .map_err(|_| Jail::NotFound)?;
-        if !parent.starts_with(&canon) {
-            return Err(Jail::Outside);
-        }
+        let parent = confine(
+            &canon,
+            &canon.join(rest.iter().collect::<PathBuf>()),
+            Jail::NotFound,
+        )?;
         let path = parent.join(leaf);
         if path.symlink_metadata().is_ok() {
-            let real = path.canonicalize().map_err(|_| Jail::Outside)?;
-            if !real.starts_with(&canon) {
-                return Err(Jail::Outside);
-            }
+            confine(&canon, &path, Jail::Outside)?;
         }
         Ok(Resolved::Inside { root, path })
     }
@@ -152,6 +154,7 @@ mod tests {
         let root = dir.path().join("share");
         let outside = dir.path().join("secret");
         fs::create_dir_all(root.join("a/b")).unwrap();
+        fs::create_dir_all(root.join("caf\u{e9}")).unwrap();
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("pw"), "x").unwrap();
         fs::write(root.join("a/f.txt"), "x").unwrap();
@@ -307,19 +310,29 @@ mod tests {
     proptest! {
         #[test]
         fn no_generated_path_escapes(
+            first in proptest::sample::select(vec![
+                "share", "SHARE", "Share", "..", "link", "nope", "", ".",
+            ]),
             segs in proptest::collection::vec(
-                proptest::sample::select(vec!["..", ".", "a", "b", "link", "", "%2e%2e", "\u{2025}"]),
+                proptest::sample::select(vec![
+                    "..", ".", "a", "b", "A", "B", "Link", "link", "inner", "", "%2e%2e",
+                    "\u{2025}", "caf\u{e9}", "cafe\u{301}", "CAF\u{c9}",
+                ]),
                 0..8,
             )
         ) {
             let f = fixture();
-            let vpath = format!("/share/{}", segs.join("/"));
+            let vpath = format!("/{first}/{}", segs.join("/"));
             for r in [f.roots.resolve(&vpath), f.roots.resolve_for_create(&vpath)] {
                 if let Ok(Resolved::Inside { path, .. }) = r {
-                    let real = path
-                        .canonicalize()
-                        .unwrap_or_else(|_| path.parent().unwrap().canonicalize().unwrap());
-                    prop_assert!(real.starts_with(&f.root));
+                    let real = match path.canonicalize() {
+                        Ok(p) => p,
+                        Err(_) => match path.parent().map(|p| p.canonicalize()) {
+                            Some(Ok(p)) => p,
+                            _ => return Err(TestCaseError::fail(format!("unresolvable {path:?}"))),
+                        },
+                    };
+                    prop_assert!(real.starts_with(&f.root), "{real:?} escaped for {vpath:?}");
                 }
             }
         }
