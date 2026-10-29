@@ -1,0 +1,101 @@
+// @vitest-environment jsdom
+import { beforeEach, describe, expect, test, vi } from "vitest";
+
+const h = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  handlers: new Map<string, (e: { payload: unknown }) => void>(),
+  platform: "linux",
+  account: "acct" as string | null,
+  pending: [] as unknown[],
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: h.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (name: string, fn: (e: { payload: unknown }) => void) => {
+    h.handlers.set(name, fn);
+    return () => h.handlers.delete(name);
+  },
+}));
+vi.mock("@/services/account", () => ({ getAccountId: async () => h.account }));
+vi.mock("@/utils/platform", () => ({ getPlatform: async () => h.platform }));
+
+import { answerFileRequest, startDeviceFiles, stopDeviceFiles } from "./deviceFiles";
+import { useDeviceFilesStore, type ApprovalPrompt } from "@/stores/deviceFilesStore";
+
+const prompt = (requestId: string): ApprovalPrompt => ({
+  requestId,
+  deviceKey: "k",
+  deviceName: "Laptop",
+  platform: "linux",
+  route: "lan",
+  newDevice: true,
+});
+const CONFIG = { enabled: true, folders: [], readOnly: false, allowed: [], seenKeys: [] };
+const calls = (cmd: string) => h.invoke.mock.calls.filter(([c]) => c === cmd);
+
+beforeEach(async () => {
+  await stopDeviceFiles();
+  h.invoke.mockReset().mockImplementation(async (cmd: string) => {
+    if (cmd === "device_files_get_config") return CONFIG;
+    if (cmd === "device_files_pending") return h.pending;
+    return undefined;
+  });
+  h.platform = "linux";
+  h.account = "acct";
+  h.pending = [];
+  h.handlers.clear();
+});
+
+describe("deviceFiles", () => {
+  test("start_is_skipped_on_android", async () => {
+    h.platform = "android";
+    await startDeviceFiles();
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.handlers.size).toBe(0);
+  });
+
+  test("start loads config and pending", async () => {
+    h.pending = [prompt("r1")];
+    await startDeviceFiles();
+    expect(calls("device_files_start")[0][1]).toEqual({ accountId: "acct" });
+    expect(useDeviceFilesStore.getState().config).toEqual(CONFIG);
+    expect(useDeviceFilesStore.getState().pending).toEqual([prompt("r1")]);
+    expect([...h.handlers.keys()].sort()).toEqual(["device-files://config", "device-files://request", "device-files://sessions"]);
+  });
+
+  test("request_event_adds_pending", async () => {
+    await startDeviceFiles();
+    h.pending = [prompt("r2")];
+    h.handlers.get("device-files://request")!({ payload: prompt("r2") });
+    await vi.waitFor(() => expect(useDeviceFilesStore.getState().pending).toEqual([prompt("r2")]));
+  });
+
+  test("config event replaces the store config", async () => {
+    await startDeviceFiles();
+    const next = { ...CONFIG, readOnly: true };
+    h.handlers.get("device-files://config")!({ payload: next });
+    expect(useDeviceFilesStore.getState().config).toEqual(next);
+  });
+
+  test("answer refetches pending", async () => {
+    await startDeviceFiles();
+    h.pending = [];
+    useDeviceFilesStore.getState().setPending([prompt("r3")]);
+    await answerFileRequest("r3", "once");
+    expect(calls("device_files_answer")[0][1]).toEqual({ requestId: "r3", answer: "once" });
+    expect(useDeviceFilesStore.getState().pending).toEqual([]);
+  });
+
+  test("stop_clears_pending_and_sessions", async () => {
+    await startDeviceFiles();
+    useDeviceFilesStore.getState().setPending([prompt("r4")]);
+    useDeviceFilesStore.getState().setSessions([{ deviceKey: "k", deviceName: "L", since: "t" }]);
+    await stopDeviceFiles();
+    const s = useDeviceFilesStore.getState();
+    expect(s.pending).toEqual([]);
+    expect(s.sessions).toEqual([]);
+    expect(s.config).toBeNull();
+    expect(h.handlers.size).toBe(0);
+    expect(calls("device_files_stop")).toHaveLength(1);
+  });
+});
