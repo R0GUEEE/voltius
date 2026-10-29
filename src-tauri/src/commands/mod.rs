@@ -2,6 +2,7 @@ pub mod clipboard;
 pub mod connections;
 pub mod crdt;
 pub mod crypto;
+pub mod device_files;
 pub mod diagnostics;
 pub mod docker;
 pub mod downloads;

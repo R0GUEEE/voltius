@@ -701,6 +701,38 @@ async fn emit_peers(shared: Arc<Shared>) {
     }
 }
 
+#[derive(Clone)]
+pub struct FilesDialer(Arc<Shared>);
+
+impl FilesDialer {
+    pub async fn open_files(
+        &self,
+        device_id: &str,
+        req: FilesRequest,
+    ) -> Result<(SessionStream, FilesReply), FilesDialError> {
+        let (addr, key) = self.0.files_target(device_id)?;
+        let permit = self.0.outbound_permit(true).await;
+        let stream = connect(addr).await.map_err(FilesDialError::Unreachable)?;
+        let mut link = secure(stream, addr, true, &self.0).await?;
+        drop(permit);
+        if hex(&link.hello.device_key) != key {
+            return Err(FilesDialError::WrongDevice);
+        }
+        let lost = |e: HandshakeError| FilesDialError::Unreachable(e.to_string());
+        link.session.send(&Frame::Files(req)).await.map_err(lost)?;
+        let reply = first_frame(&mut link.session, FILES_REPLY_TIMEOUT)
+            .await
+            .map_err(lost)?;
+        match reply {
+            Frame::FilesReply(FilesReply::Refused { reason }) => {
+                Err(FilesDialError::Refused(reason))
+            }
+            Frame::FilesReply(reply) => Ok((SessionStream::new(link.session), reply)),
+            other => Err(FilesDialError::Unreachable(format!("unexpected {other:?}"))),
+        }
+    }
+}
+
 pub struct Manager {
     shared: Arc<Shared>,
     port: u16,
@@ -836,31 +868,8 @@ impl Manager {
         self.shared.caps.send_replace(Some(caps));
     }
 
-    pub async fn open_files(
-        &self,
-        device_id: &str,
-        req: FilesRequest,
-    ) -> Result<(SessionStream, FilesReply), FilesDialError> {
-        let (addr, key) = self.shared.files_target(device_id)?;
-        let permit = self.shared.outbound_permit(true).await;
-        let stream = connect(addr).await.map_err(FilesDialError::Unreachable)?;
-        let mut link = secure(stream, addr, true, &self.shared).await?;
-        drop(permit);
-        if hex(&link.hello.device_key) != key {
-            return Err(FilesDialError::WrongDevice);
-        }
-        let lost = |e: HandshakeError| FilesDialError::Unreachable(e.to_string());
-        link.session.send(&Frame::Files(req)).await.map_err(lost)?;
-        let reply = first_frame(&mut link.session, FILES_REPLY_TIMEOUT)
-            .await
-            .map_err(lost)?;
-        match reply {
-            Frame::FilesReply(FilesReply::Refused { reason }) => {
-                Err(FilesDialError::Refused(reason))
-            }
-            Frame::FilesReply(reply) => Ok((SessionStream::new(link.session), reply)),
-            other => Err(FilesDialError::Unreachable(format!("unexpected {other:?}"))),
-        }
+    pub fn files_dialer(&self) -> FilesDialer {
+        FilesDialer(self.shared.clone())
     }
 
     fn shutdown(&mut self) {
@@ -1447,7 +1456,11 @@ mod tests {
     }
 
     async fn open_err(m: &Manager, id: &str) -> FilesDialError {
-        match m.open_files(id, FilesRequest { grant: None }).await {
+        match m
+            .files_dialer()
+            .open_files(id, FilesRequest { grant: None })
+            .await
+        {
             Ok(_) => panic!("file connection to {id} opened"),
             Err(e) => e,
         }
@@ -1467,6 +1480,7 @@ mod tests {
         let before = (conn_of(&a, "dev-b"), conn_of(&b, "dev-a"));
 
         let (_stream, reply) = a
+            .files_dialer()
             .open_files("dev-b", FilesRequest { grant: None })
             .await
             .unwrap();
@@ -1607,6 +1621,7 @@ mod tests {
         assert!(dialable(&b).is_empty());
 
         let (_stream, _reply) = b
+            .files_dialer()
             .open_files("dev-a", FilesRequest { grant: None })
             .await
             .unwrap();

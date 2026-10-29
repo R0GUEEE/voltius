@@ -116,11 +116,15 @@ impl RealSftp {
 
     pub async fn open_over(link: Arc<dyn SftpReopen>) -> Result<Self, String> {
         let session = link.open().await?;
-        Ok(Self {
+        Ok(Self::over(link, session))
+    }
+
+    pub fn over(link: Arc<dyn SftpReopen>, session: SftpSession) -> Self {
+        Self {
             session: Arc::new(Mutex::new(session)),
             link,
             ssh: None,
-        })
+        }
     }
 
     pub(crate) fn fs(&self) -> SftpFs {

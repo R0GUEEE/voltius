@@ -10,7 +10,6 @@ mod app_lock;
 mod clock;
 mod commands;
 mod crypto;
-#[allow(dead_code)]
 mod device_files;
 mod docker;
 mod error;
@@ -201,7 +200,9 @@ pub fn run() {
 
     #[cfg(desktop)]
     {
-        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+        builder = builder
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_notification::init());
     }
 
     builder
@@ -256,6 +257,8 @@ pub fn run() {
 
             #[cfg(desktop)]
             app.manage(updater::UpdaterState::default());
+            #[cfg(desktop)]
+            app.manage(device_files::DeviceFilesState::default());
             app.manage(KnownHostsStore::load());
             app.manage(app_lock::AppLock::load());
             app.manage(app_lock::LastActive::load());
@@ -398,6 +401,21 @@ pub fn run() {
             commands::lan_sync::lan_sync_take_blob,
             commands::lan_sync::lan_sync_peers,
             commands::lan_sync::lan_sync_set_paused,
+            commands::device_files::device_files_connect,
+            #[cfg(desktop)]
+            commands::device_files::device_files_start,
+            #[cfg(desktop)]
+            commands::device_files::device_files_stop,
+            #[cfg(desktop)]
+            commands::device_files::device_files_get_config,
+            #[cfg(desktop)]
+            commands::device_files::device_files_set_config,
+            #[cfg(desktop)]
+            commands::device_files::device_files_answer,
+            #[cfg(desktop)]
+            commands::device_files::device_files_disconnect,
+            #[cfg(desktop)]
+            commands::device_files::device_files_pending,
             commands::ssh::ssh_connect,
             commands::ssh::ssh_disconnect,
             commands::ssh::ssh_send_input,

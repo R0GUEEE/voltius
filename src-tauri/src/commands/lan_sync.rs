@@ -40,6 +40,19 @@ impl LanSyncState {
         publish(&self.relay, None, emit, &ManagerEvent::Status(status));
     }
 
+    #[cfg(desktop)]
+    pub(crate) async fn offer_files(
+        &self,
+        svc: Option<Arc<dyn manager::InboundFiles>>,
+        files: bool,
+    ) {
+        if let Some(manager) = self.manager.lock().await.as_ref() {
+            manager.set_file_service(svc);
+            let caps = crate::lan_sync::protocol::Caps { files, port: None };
+            manager.set_caps(caps).await;
+        }
+    }
+
     async fn device_key(&self) -> Result<DeviceKey, String> {
         let key = self
             .device_key
@@ -159,7 +172,10 @@ pub async fn broadcast_inner(state: &LanSyncState, blob: Vec<u8>) {
     }
 }
 
-async fn with_manager<T: Default>(state: &LanSyncState, f: impl FnOnce(&Manager) -> T) -> T {
+pub(crate) async fn with_manager<T: Default>(
+    state: &LanSyncState,
+    f: impl FnOnce(&Manager) -> T,
+) -> T {
     state
         .manager
         .lock()
@@ -177,7 +193,7 @@ pub async fn peers_inner(state: &LanSyncState) -> Vec<PeerInfo> {
     with_manager(state, Manager::peers).await
 }
 
-fn emitter(app: AppHandle) -> Emit {
+pub(crate) fn emitter(app: AppHandle) -> Emit {
     Arc::new(move |name, payload| {
         if let Err(e) = app.emit(name, payload) {
             log::warn!("lan-sync: emit {name} failed: {e}");
@@ -245,6 +261,21 @@ pub async fn lan_sync_set_paused(
 ) -> Result<(), String> {
     set_paused_inner(&state, paused, &emitter(app)).await;
     Ok(())
+}
+
+#[cfg(test)]
+impl LanSyncState {
+    pub(crate) async fn meet(&self, other: &LanSyncState) {
+        let port = with_manager(other, Manager::port).await;
+        if let Some(manager) = self.manager.lock().await.as_ref() {
+            manager
+                .connect(std::net::SocketAddr::from((
+                    std::net::Ipv4Addr::LOCALHOST,
+                    port,
+                )))
+                .await;
+        }
+    }
 }
 
 #[cfg(test)]

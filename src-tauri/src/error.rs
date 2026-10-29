@@ -78,6 +78,12 @@ error_codes! {
     VaultPermissionsCorrupted,
     // Port knocking.
     KnockUdpViaProxy,
+    // My devices file access.
+    DeviceFileAccessOff,
+    DeviceAccessDenied,
+    DeviceApprovalTimedOut,
+    DeviceBusy,
+    DeviceUnreachable,
 }
 
 /// A lower-level failure whose cause may have an [`ErrorCode`]. The one place

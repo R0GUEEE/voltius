@@ -33,6 +33,12 @@ pub struct FileAccessConfig {
     pub seen_keys: Vec<String>,
 }
 
+impl FileAccessConfig {
+    pub fn always_allows(&self, key: &str) -> bool {
+        self.allowed.iter().any(|d| d.always && d.device_key == key)
+    }
+}
+
 pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -131,7 +137,7 @@ pub fn decide(
         return Decision::Refuse(Refusal::Busy);
     }
     let read_only = cfg.read_only;
-    if cfg.allowed.iter().any(|d| d.always && d.device_key == key) {
+    if cfg.always_allows(key) {
         return Decision::Accept {
             read_only,
             grant: None,
@@ -148,7 +154,8 @@ pub fn decide(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
 pub enum Answer {
     Deny,
     Once,
@@ -184,7 +191,7 @@ impl Broker {
             .unwrap()
             .insert(id.clone(), (prompt, tx));
         PendingApproval {
-            cleanup: Cleanup { broker: self, id },
+            _cleanup: Cleanup { broker: self, id },
             rx,
         }
     }
@@ -207,15 +214,11 @@ impl Broker {
 }
 
 pub struct PendingApproval<'a> {
-    cleanup: Cleanup<'a>,
+    _cleanup: Cleanup<'a>,
     rx: oneshot::Receiver<Answer>,
 }
 
 impl PendingApproval<'_> {
-    pub fn id(&self) -> &str {
-        &self.cleanup.id
-    }
-
     pub async fn wait(self, wait: Duration) -> Option<Answer> {
         tokio::time::timeout(wait, self.rx).await.ok()?.ok()
     }
@@ -431,7 +434,6 @@ mod tests {
     async fn broker_answer_resolves_once() {
         let broker = Broker::default();
         let p = broker.register(prompt("x"));
-        assert_eq!(p.id(), "x");
         assert!(broker.answer("x", Answer::Once));
         assert!(!broker.answer("x", Answer::Always));
         assert_eq!(p.wait(APPROVAL_WAIT).await, Some(Answer::Once));

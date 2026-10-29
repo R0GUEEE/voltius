@@ -37,6 +37,8 @@ pub enum SftpStep {
     Handshake,
     Authenticating,
     SftpSubsystem,
+    DeviceDialing,
+    DeviceApproval,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,7 +47,12 @@ pub struct SftpStepEvent {
     pub detail: String,
 }
 
-fn emit_step(app: &AppHandle, connect_id: &str, step: SftpStep, detail: impl Into<String>) {
+pub(crate) fn emit_step(
+    app: &AppHandle,
+    connect_id: &str,
+    step: SftpStep,
+    detail: impl Into<String>,
+) {
     let _ = app.emit(
         &format!("sftp-step-{}", connect_id),
         SftpStepEvent {
@@ -53,6 +60,10 @@ fn emit_step(app: &AppHandle, connect_id: &str, step: SftpStep, detail: impl Int
             detail: detail.into(),
         },
     );
+}
+
+pub(crate) fn emit_closed(app: &AppHandle, id: &str) {
+    let _ = app.emit(&format!("sftp-closed-{id}"), ());
 }
 
 struct SftpEntry {
@@ -119,7 +130,7 @@ fn spawn_keepalive(
                 _ => {
                     failures += 1;
                     if failures >= max {
-                        let _ = app.emit(&format!("sftp-closed-{id}"), ());
+                        emit_closed(&app, &id);
                         break;
                     }
                 }
@@ -137,10 +148,29 @@ impl SftpManager {
         }
     }
 
-    /// A backend with no SSH connection underneath.
-    async fn register_standalone(&self, backend: Arc<dyn FileBackend>) -> String {
-        self.register(backend, None, false, CancellationToken::new(), vec![])
-            .await
+    /// A backend with no SSH connection underneath; `close` cancels `cancel`.
+    pub(crate) async fn register_standalone(
+        &self,
+        backend: Arc<dyn FileBackend>,
+        cancel: CancellationToken,
+    ) -> String {
+        self.register(backend, None, false, cancel, vec![]).await
+    }
+
+    /// Swap a fresh backend into a standalone session, keeping its id. False when the id is unknown.
+    pub(crate) async fn relink_standalone(
+        &self,
+        id: &str,
+        backend: Arc<dyn FileBackend>,
+        cancel: CancellationToken,
+    ) -> bool {
+        let mut sessions = self.sessions.lock().await;
+        let Some(entry) = sessions.get_mut(id).filter(|e| e.handle.is_none()) else {
+            return false;
+        };
+        entry.backend = backend;
+        std::mem::replace(&mut entry.cancel, cancel).cancel();
+        true
     }
 
     /// A backend riding a terminal session's handle, which a relink must not swap.
@@ -229,7 +259,9 @@ impl SftpManager {
         secure: bool,
     ) -> Result<String, String> {
         let backend = crate::ftp::connect(host, port, username, password, secure).await?;
-        Ok(self.register_standalone(Arc::new(backend)).await)
+        Ok(self
+            .register_standalone(Arc::new(backend), CancellationToken::new())
+            .await)
     }
 
     pub async fn connect_webdav(
@@ -243,7 +275,9 @@ impl SftpManager {
     ) -> Result<String, AppError> {
         let backend =
             crate::webdav::connect(url, username, password, proxy, known_hosts, prompt).await?;
-        Ok(self.register_standalone(Arc::new(backend)).await)
+        Ok(self
+            .register_standalone(Arc::new(backend), CancellationToken::new())
+            .await)
     }
 
     pub async fn connect(
