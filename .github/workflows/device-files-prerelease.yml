@@ -1,0 +1,117 @@
+name: Device files pre-release
+
+# Temporary test build for feat/device-files; delete with its branch, tag and release.
+# The release is created with GITHUB_TOKEN so release:published workflows never fire.
+on:
+  push:
+    tags: ['v*-df.*']
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      id: ${{ steps.create.outputs.id }}
+    steps:
+      - name: Create the draft pre-release
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          id=$(gh api -X POST "repos/$REPO/releases" \
+            -f "tag_name=$TAG" \
+            -f "name=Voltius $TAG (device files test)" \
+            -f "body=Temporary test build of feat/device-files. Not for general use." \
+            -F draft=true \
+            -F prerelease=true \
+            -f make_latest=false \
+            --jq .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+  windows-arm64:
+    needs: create-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+          cache: 'pnpm'
+
+      - name: Read toolchain channel from rust-toolchain.toml
+        id: rust
+        shell: bash
+        run: echo "channel=$(sed -nE 's/^channel[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust.outputs.channel }}
+          targets: aarch64-pc-windows-msvc
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          key: aarch64-pc-windows-msvc
+          workspaces: '. -> target'
+
+      - run: pnpm install
+
+      - uses: mozilla/sccache-action@v0.0.11
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+          VOLTIUS_REQUIRE_SEEDED_PLUGINS: "1"
+        with:
+          releaseId: ${{ needs.create-release.outputs.id }}
+          args: '--target aarch64-pc-windows-msvc'
+          uploadUpdaterJson: false
+
+  android:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/android-build-env
+        with:
+          keystore-base64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+
+      - name: Build Android APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          VOLTIUS_REQUIRE_SEEDED_PLUGINS: "1"
+        run: pnpm tauri android build --apk --target aarch64
+
+      - name: Upload APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          dest="Voltius_${TAG#v}_aarch64.apk"
+          cp src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk "$dest"
+          gh release upload "$TAG" "$dest" --clobber -R "$REPO"
+
+  publish:
+    needs: [create-release, windows-arm64, android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish as pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ID: ${{ needs.create-release.outputs.id }}
+        run: gh api -X PATCH "repos/$REPO/releases/$ID" -F draft=false -F prerelease=true -f make_latest=false
