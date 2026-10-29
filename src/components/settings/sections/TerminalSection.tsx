@@ -7,15 +7,15 @@ import { Toggle } from "@/components/shared/Toggle";
 import { DEFAULT_KEYWORD_RULES, sameKeywordRules } from "@/utils/keywordMatcher";
 import { KeywordRulesEditor } from "./KeywordRulesEditor";
 import { SettingRow } from "./shared";
-import { useIsAndroid } from "@/utils/platform";
+import { useIsAndroid, useIsMobile } from "@/utils/platform";
 import { MOBILE_HIDDEN_TOGGLES } from "@/components/settings/settingsMobileCore";
 
 function ToggleCard({ id, i18nKey }: { id: ToggleId; i18nKey: string }) {
   const { t } = useTranslation();
   const [value, setValue] = useToggle(id);
   const fallback = TOGGLE_DEFS[id].default;
-  const isAndroid = useIsAndroid();
-  if (isAndroid && MOBILE_HIDDEN_TOGGLES.has(id)) return null;
+  const isMobile = useIsMobile();
+  if (isMobile && MOBILE_HIDDEN_TOGGLES.has(id)) return null;
   return (
     <SettingRow
       variant="card"
@@ -33,6 +33,8 @@ function ToggleCard({ id, i18nKey }: { id: ToggleId; i18nKey: string }) {
 
 export default function TerminalSection() {
   const { t } = useTranslation();
+  // Volume-key Ctrl is an Android hardware-key affordance, so this section still needs the
+  // Android-only hook (the mobile rows themselves are gated inside ToggleCard via useIsMobile).
   const isAndroid = useIsAndroid();
   const scrollbackLines = useTerminalSettingsStore((s) => s.scrollbackLines);
   const setScrollbackLines = useTerminalSettingsStore((s) => s.setScrollbackLines);

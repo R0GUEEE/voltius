@@ -1,7 +1,7 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import i18n from "@/i18n";
 import { invoke } from "@/lib/invoke";
-import { getPlatform } from "@/utils/platform";
+import { getPlatform, isMobileOS } from "@/utils/platform";
 
 /** Where the browser sends the code: a listener on this machine, or the app's own link on a phone. */
 export type PasskeyReturn = { kind: "loopback"; port: number; state: string } | { kind: "app"; state: string };
@@ -88,7 +88,9 @@ export function cancelPasskeyRoundTrip(): void {
 /** Runs a passkey ceremony in the system browser and resolves with the code it hands back. */
 export async function passkeyRoundTrip(open: OpenPasskey): Promise<string> {
   cancelCurrent?.();
-  const listener = (await getPlatform()) === "android" ? listenForLink(randomState()) : await listenOnLoopback(randomState());
+  // iOS has no loopback redirect either: both mobile OSes come back through a deep link.
+  const os = await getPlatform();
+  const listener = isMobileOS(os) ? listenForLink(randomState()) : await listenOnLoopback(randomState());
   let cancelled = false;
   const cancel = () => {
     cancelled = true;

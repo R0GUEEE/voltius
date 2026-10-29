@@ -22,7 +22,11 @@ import { createSshConfigSync, sshConfigSync, sshConfigSyncNow, startSshConfigSyn
 
 vi.mock("@/lib/invoke", () => ({ invoke: vi.fn() }));
 vi.mock("@/services/sync", () => ({ scheduleSync: vi.fn(), getDeviceId: vi.fn(async () => "d1"), isSyncHalted: vi.fn(() => false) }));
-vi.mock("@/utils/platform", () => ({ getPlatform: vi.fn(async () => "linux") }));
+vi.mock("@/utils/platform", async (orig) => ({
+  ...(await orig<object>()),
+  getPlatform: vi.fn(async () => "linux"),
+  isMobileOS: (p: string | null) => p === "android" || p === "ios",
+}));
 vi.mock("@/services/account", () => ({ isServerMode: async () => false }));
 vi.mock("@/stores/vaultStore", () => ({ useVaultStore: { getState: () => ({ vaults: [{ id: "personal", name: "Personal" }] }) } }));
 vi.mock("@/stores/connectionStore", async (orig) => ({
