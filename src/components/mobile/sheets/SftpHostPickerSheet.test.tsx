@@ -109,3 +109,14 @@ test("picking a host reports a connection target", () => {
   fireEvent.click(screen.getByText("home-box"));
   expect(onPick).toHaveBeenCalledWith({ kind: "connection", id: "home-box" });
 });
+
+test("the empty label shows with no hosts and no devices, and gives way to device rows", () => {
+  useConnectionStore.setState({ connections: [], teamConnections: {} });
+  const { rerender } = render(<SftpHostPickerSheet onPick={() => {}} onClose={() => {}} />);
+  expect(screen.getByText("mobile.sheets.sftpHostPicker.noSshHosts")).toBeTruthy();
+
+  devices.rows = [{ deviceId: "d1", deviceKey: "k", name: "Work PC", platform: "windows", state: "ready", route: "lan", lastSeen: null }];
+  rerender(<SftpHostPickerSheet onPick={() => {}} onClose={() => {}} />);
+  expect(screen.getByText("Work PC")).toBeTruthy();
+  expect(screen.queryByText("mobile.sheets.sftpHostPicker.noSshHosts")).toBeNull();
+});

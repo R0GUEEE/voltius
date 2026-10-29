@@ -59,7 +59,7 @@ export default function MobileSftpScreen({ presetConnectionId, asTab, visible = 
   // The SFTP tab opens on the current terminal session's host when nothing is picked yet.
   const activeConnId = useSessionStore((s) => s.sessions.find((x) => x.id === s.activeSessionId)?.connectionId);
   useEffect(() => {
-    if (!asTab || !visible || connAId || !activeConnId) return;
+    if (!asTab || !visible || targetA || !activeConnId) return;
     const c = connections.find((x) => x.id === activeConnId);
     if (c && isSshConnection(c)) setTargetA({ kind: "connection", id: c.id });
   }, [asTab, visible]); // eslint-disable-line react-hooks/exhaustive-deps

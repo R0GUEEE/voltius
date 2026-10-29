@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useHostPicker } from "@/hooks/useHostPicker";
 import { HostPickerTree } from "@/components/shared/HostPickerTree";
@@ -62,6 +62,10 @@ export default function HostPickerSheet({
   const [q, setQ] = useState("");
   const { rows, recent, vaults, vaultFilter, setVaultFilter, toggleFolder } = useHostPicker({ query: q, sshOnly, excludeId });
 
+  const listRef = useRef<HTMLDivElement>(null);
+  const [hasDevices, setHasDevices] = useState(false);
+  useLayoutEffect(() => { setHasDevices(!!listRef.current?.querySelector("[data-my-devices]")); });
+
   return (
     <BottomSheet title={title} onClose={onClose}>
       <MobileFilterBar attr={`${attr}-search`} autoFocus={autoFocusSearch} value={q} onChange={setQ} inset="px-1 pb-2"
@@ -79,9 +83,9 @@ export default function HostPickerSheet({
           ))}
         </div>
       )}
-      <div className="max-h-[50vh] overflow-y-auto">
+      <div ref={listRef} className="max-h-[50vh] overflow-y-auto">
         {devices?.(q)}
-        {rows.length === 0 && <div className="px-3 py-6 text-center text-sm text-(--t-text-dim)">{emptyLabel}</div>}
+        {rows.length === 0 && !hasDevices && <div className="px-3 py-6 text-center text-sm text-(--t-text-dim)">{emptyLabel}</div>}
         <HostPickerTree
           rows={rows}
           recent={recent}

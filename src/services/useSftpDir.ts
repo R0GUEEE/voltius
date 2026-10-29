@@ -12,9 +12,9 @@ import { useConnectionStore } from "@/stores/connectionStore";
 import { type FileEntry, genId } from "@/components/filetransfer/SFTPTypes";
 import { useDirListing } from "@/components/filetransfer/useDirListing";
 import { joinPath } from "@/components/filetransfer/moveTargetCore";
-import { connectErrorPhase, useConnectRetry } from "@/hooks/useConnectRetry";
+import { closedPhase, connectErrorPhase, useConnectRetry } from "@/hooks/useConnectRetry";
 import type { Connection } from "@/types";
-import { BackendError, type BackendErrorCode } from "@/services/backendErrors";
+import type { BackendErrorCode } from "@/services/backendErrors";
 
 export type SftpPhase =
   | { tag: "connecting" }
@@ -93,7 +93,7 @@ export function useSftpDir(target: SftpDirTarget | undefined) {
     const id = phase.sftpId;
     const un = listen<{ code?: BackendErrorCode } | null>(`sftp-closed-${id}`, ({ payload }) => {
       const lost = i18n.t("fileTransfer.page.connectionLost");
-      const next: SftpPhase = payload?.code ? connectErrorPhase(new BackendError(payload.code, lost)) : { tag: "error", message: lost };
+      const next: SftpPhase = closedPhase(payload, lost);
       setPhase((p) => (p.tag === "connected" && p.sftpId === id ? next : p));
     });
     return () => { un.then((fn) => fn()); };

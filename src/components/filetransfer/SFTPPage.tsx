@@ -22,11 +22,11 @@ import { useFileClipboardStore, type FileEndpoint } from "@/stores/fileClipboard
 import { buildPasteDeps, executePaste } from "./pasteService";
 import { connectFileBackend } from "@/services/sftpTarget";
 import { connectDevice } from "@/services/deviceFiles";
-import { BackendError, type BackendErrorCode } from "@/services/backendErrors";
+import type { BackendErrorCode } from "@/services/backendErrors";
 import { hostPresentation } from "./hostPresentation";
 import { idToRelease, relinkOf } from "./sideRelink";
 import { cancelKnownHostPrompt } from "@/services/knownHosts";
-import { connectErrorPhase, useConnectRetry } from "@/hooks/useConnectRetry";
+import { closedPhase, connectErrorPhase, useConnectRetry } from "@/hooks/useConnectRetry";
 import {
   type HostChoice, type SidePhase, type FileEntry,
   genId,
@@ -63,7 +63,7 @@ function useConnectionLoss(
     if (!sftpId) return;
     const unlisten = listen<{ code?: BackendErrorCode }>(`sftp-closed-${sftpId}`, ({ payload }) => {
       const lost = t("fileTransfer.page.connectionLost");
-      const cause = payload?.code ? connectErrorPhase(new BackendError(payload.code, lost)) : { tag: "error" as const, message: lost };
+      const cause = closedPhase(payload, lost);
       setPhase((p) => p.tag === "connected" && p.sftpId === sftpId
         ? { ...cause, host: host ?? undefined, lostSftpId: sftpId }
         : p);
