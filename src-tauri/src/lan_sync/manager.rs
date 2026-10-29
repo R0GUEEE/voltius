@@ -155,8 +155,8 @@ async fn secure(
     })
 }
 
-async fn first_frame(session: &mut Session) -> Result<Frame, HandshakeError> {
-    timeout(HANDSHAKE_TIMEOUT, session.recv_max(MAX_FRAME))
+async fn first_frame(session: &mut Session, within: Duration) -> Result<Frame, HandshakeError> {
+    timeout(within, session.recv_max(MAX_FRAME))
         .await
         .map_err(|_| HandshakeError::Timeout)?
 }
@@ -172,7 +172,7 @@ async fn establish(
     let first = if initiator {
         None
     } else {
-        Some(first_frame(&mut link.session).await?)
+        Some(first_frame(&mut link.session, HANDSHAKE_TIMEOUT).await?)
     };
     match first {
         Some(Frame::Files(req)) => {
@@ -270,6 +270,8 @@ impl Outbox {
 
 struct Peer {
     info: PeerInfo,
+    ip: IpAddr,
+    port: Option<u16>,
     rank: Rank,
     conn: u64,
     adopted_at: Instant,
@@ -402,6 +404,8 @@ impl Shared {
             id,
             Peer {
                 info,
+                ip: link.addr.ip(),
+                port: None,
                 rank,
                 conn,
                 adopted_at: Instant::now(),
@@ -463,6 +467,7 @@ impl Shared {
             Frame::Caps(caps) => {
                 if let Some(peer) = self.lock().peers.get_mut(from) {
                     peer.info.files = caps.files;
+                    peer.port = caps.port;
                 }
                 self.peers_changed.notify_one();
             }
@@ -485,12 +490,17 @@ impl Shared {
     fn files_target(&self, id: &str) -> Result<(SocketAddr, String), FilesDialError> {
         let state = self.lock();
         let peer = state.peers.get(id).ok_or(FilesDialError::NotListed)?;
-        let addr = state
-            .dialable
-            .iter()
-            .find(|k| k.addr.ip().to_string() == peer.info.address)
+        let port = peer
+            .port
+            .or_else(|| {
+                state
+                    .dialable
+                    .iter()
+                    .find(|k| k.device.as_deref() == Some(id) && k.addr.ip() == peer.ip)
+                    .map(|k| k.addr.port())
+            })
             .ok_or_else(|| FilesDialError::Unreachable("listening port unknown".into()))?;
-        Ok((addr.addr, peer.info.device_key.clone()))
+        Ok((SocketAddr::new(peer.ip, port), peer.info.device_key.clone()))
     }
 
     fn remember(&self, addr: SocketAddr) {
@@ -821,7 +831,8 @@ impl Manager {
         self.shared.lock().files = svc;
     }
 
-    pub async fn set_caps(&self, caps: Caps) {
+    pub async fn set_caps(&self, mut caps: Caps) {
+        caps.port = Some(self.port);
         self.shared.caps.send_replace(Some(caps));
     }
 
@@ -840,9 +851,8 @@ impl Manager {
         }
         let lost = |e: HandshakeError| FilesDialError::Unreachable(e.to_string());
         link.session.send(&Frame::Files(req)).await.map_err(lost)?;
-        let reply = timeout(FILES_REPLY_TIMEOUT, link.session.recv_max(MAX_FRAME))
+        let reply = first_frame(&mut link.session, FILES_REPLY_TIMEOUT)
             .await
-            .map_err(|_| lost(HandshakeError::Timeout))?
             .map_err(lost)?;
         match reply {
             Frame::FilesReply(FilesReply::Refused { reason }) => {
@@ -1501,9 +1511,17 @@ mod tests {
         let (a, mut ea) = spawn("dev-a", 1).await;
         let (b, _eb) = spawn("dev-b", 1).await;
         synced(&a, &b).await;
-        b.set_caps(Caps { files: true }).await;
+        b.set_caps(Caps {
+            files: true,
+            port: None,
+        })
+        .await;
         next_event(&mut ea, files_on("dev-b")).await;
-        b.set_caps(Caps { files: false }).await;
+        b.set_caps(Caps {
+            files: false,
+            port: None,
+        })
+        .await;
         until("caps off", || !a.peers()[0].files).await;
     }
 
@@ -1511,7 +1529,11 @@ mod tests {
     async fn caps_sent_to_later_peers() {
         let (a, mut ea) = spawn("dev-a", 1).await;
         let (b, _eb) = spawn("dev-b", 1).await;
-        b.set_caps(Caps { files: true }).await;
+        b.set_caps(Caps {
+            files: true,
+            port: None,
+        })
+        .await;
         synced(&a, &b).await;
         next_event(&mut ea, files_on("dev-b")).await;
     }
@@ -1567,6 +1589,28 @@ mod tests {
         until("handshakes settle", || idle(&b)).await;
         assert_eq!(served(&svc), 0);
         assert!(b.peers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn open_files_reaches_inbound_only_peer() {
+        let (a, _ea) = spawn("dev-a", 1).await;
+        let (b, mut eb) = spawn("dev-b", 1).await;
+        let svc = Arc::new(Recorder::default());
+        a.set_file_service(Some(svc.clone()));
+        a.set_caps(Caps {
+            files: true,
+            port: None,
+        })
+        .await;
+        synced(&a, &b).await;
+        next_event(&mut eb, files_on("dev-a")).await;
+        assert!(dialable(&b).is_empty());
+
+        let (_stream, _reply) = b
+            .open_files("dev-a", FilesRequest { grant: None })
+            .await
+            .unwrap();
+        assert_eq!(served(&svc), 1);
     }
 
     #[tokio::test]
