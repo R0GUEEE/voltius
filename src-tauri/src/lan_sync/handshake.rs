@@ -18,7 +18,7 @@ pub(super) const MAX_CHUNK: usize = NOISE_MAX - 16;
 const MAX_PROOFS: usize = 16;
 const PREAUTH_MAX: usize = 64 * 1024;
 const DEVICE_CONTEXT: &[u8] = b"voltius-lan-sync-device-v1";
-const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const PING_EVERY: Duration = if cfg!(test) {
     Duration::from_millis(100)
 } else {
@@ -250,7 +250,7 @@ impl Session {
         (self.reader, self.writer)
     }
 
-    pub fn split_live(self) -> (SessionReader, SessionWriter) {
+    pub(super) fn split_live(self) -> (SessionReader, SessionWriter) {
         let (mut reader, mut writer) = self.split();
         reader.set_idle_timeout(IDLE_TIMEOUT);
         writer.set_write_timeout(WRITE_TIMEOUT);
