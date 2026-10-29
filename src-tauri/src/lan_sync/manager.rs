@@ -859,10 +859,12 @@ impl Manager {
         }
     }
 
+    #[cfg(desktop)]
     pub fn set_file_service(&self, svc: Option<Arc<dyn InboundFiles>>) {
         self.shared.lock().files = svc;
     }
 
+    #[cfg(desktop)]
     pub async fn set_caps(&self, mut caps: Caps) {
         caps.port = Some(self.port);
         self.shared.caps.send_replace(Some(caps));
