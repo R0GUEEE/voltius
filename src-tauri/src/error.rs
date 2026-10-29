@@ -84,6 +84,7 @@ error_codes! {
     DeviceApprovalTimedOut,
     DeviceBusy,
     DeviceUnreachable,
+    DeviceAccessExpired,
 }
 
 /// A lower-level failure whose cause may have an [`ErrorCode`]. The one place

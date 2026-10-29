@@ -6,7 +6,7 @@ pub mod real;
 
 pub use backend::FileBackend;
 
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCode};
 use crate::known_hosts::{ConflictPrompt, KnownHostsStore};
 use crate::proxy::ProxySpec;
 use crate::ssh::client::{
@@ -62,8 +62,14 @@ pub(crate) fn emit_step(
     );
 }
 
-pub(crate) fn emit_closed(app: &AppHandle, id: &str) {
-    let _ = app.emit(&format!("sftp-closed-{id}"), ());
+#[derive(Serialize, Clone)]
+struct Closed {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<ErrorCode>,
+}
+
+pub(crate) fn emit_closed(app: &AppHandle, id: &str, code: Option<ErrorCode>) {
+    let _ = app.emit(&format!("sftp-closed-{id}"), Closed { code });
 }
 
 struct SftpEntry {
@@ -130,7 +136,7 @@ fn spawn_keepalive(
                 _ => {
                     failures += 1;
                     if failures >= max {
-                        emit_closed(&app, &id);
+                        emit_closed(&app, &id, None);
                         break;
                     }
                 }

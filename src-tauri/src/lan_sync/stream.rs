@@ -171,7 +171,7 @@ impl AsyncWrite for SessionStream {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::lan_sync::handshake::{handshake, IDLE_TIMEOUT, WRITE_TIMEOUT};
     use crate::lan_sync::identity::{derive_auth_key, test_identity as identity};
@@ -180,7 +180,7 @@ mod tests {
     use tokio::io::duplex;
     use tokio::time::Instant;
 
-    async fn sessions() -> (Session, Session) {
+    pub(crate) async fn sessions() -> (Session, Session) {
         let keys = [derive_auth_key(&[1; 32])];
         let (a, b) = duplex(64 * 1024);
         let (ia, ib) = (identity("dev-a"), identity("dev-b"));

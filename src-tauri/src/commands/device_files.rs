@@ -1,5 +1,5 @@
 use crate::commands::lan_sync::{with_manager, LanSyncState};
-use crate::device_files::link::{DeviceLink, FilesSource, OnClosed};
+use crate::device_files::link::{DeviceLink, DeviceLinks, FilesSource, OnClosed};
 use crate::error::AppError;
 use crate::lan_sync::manager::FilesDialer;
 use crate::sftp::real::RealSftp;
@@ -41,6 +41,7 @@ impl FilesSource for Lan {
 
 pub(crate) async fn connect_inner(
     sftp: &SftpManager,
+    links: &DeviceLinks,
     source: Arc<dyn FilesSource>,
     device_id: String,
     relink: Option<&str>,
@@ -48,9 +49,13 @@ pub(crate) async fn connect_inner(
     on_closed: OnClosed,
 ) -> Result<DeviceConnected, AppError> {
     let closed = CancellationToken::new();
+    let pass = relink
+        .map(|id| links.pass(id, &device_id))
+        .unwrap_or_default();
     let link = Arc::new(DeviceLink::new(
         source,
         device_id,
+        pass,
         closed.clone(),
         on_closed,
     ));
@@ -82,6 +87,7 @@ pub(crate) async fn connect_inner(
         _ => sftp.register_standalone(backend, closed).await,
     };
     link.bind(sftp_id.clone());
+    links.insert(sftp_id.clone(), &link);
     Ok(DeviceConnected { sftp_id, rtt_ms })
 }
 
@@ -89,6 +95,7 @@ pub(crate) async fn connect_inner(
 pub async fn device_files_connect(
     app: AppHandle,
     sftp_state: State<'_, SftpManager>,
+    links: State<'_, DeviceLinks>,
     device_id: String,
     connect_id: String,
     relink: Option<String>,
@@ -97,11 +104,12 @@ pub async fn device_files_connect(
     let closer = app.clone();
     connect_inner(
         &sftp_state,
+        &links,
         Arc::new(Lan(app.clone())),
         device_id,
         relink.as_deref(),
         |step| emit_step(&app, &connect_id, step, detail.as_str()),
-        Box::new(move |id| emit_closed(&closer, id)),
+        Box::new(move |id, code| emit_closed(&closer, id, code)),
     )
     .await
 }
@@ -111,28 +119,22 @@ mod serving {
     use crate::commands::lan_sync::{emitter, Emit, LanSyncState};
     use crate::device_files::policy::{Answer, ApprovalPrompt, FileAccessConfig};
     use crate::device_files::service::{Alert, FileService};
-    use crate::device_files::DeviceFilesState;
     use std::path::PathBuf;
     use std::sync::Arc;
     use tauri::{AppHandle, Manager, State};
 
-    async fn offer(lan: &LanSyncState, svc: &Arc<FileService>) {
-        lan.offer_files(Some(svc.clone()), svc.offers()).await;
-    }
-
-    async fn running(files: &DeviceFilesState) -> Option<Arc<FileService>> {
-        files.service.lock().await.clone()
+    async fn running(lan: &LanSyncState) -> Option<Arc<FileService>> {
+        lan.files.service.lock().await.clone()
     }
 
     pub(crate) async fn start_inner(
         lan: &LanSyncState,
-        files: &DeviceFilesState,
         dir: PathBuf,
         account: String,
         emit: Emit,
         alert: Alert,
     ) {
-        let mut slot = files.service.lock().await;
+        let mut slot = lan.files.service.lock().await;
         let svc = match slot.as_ref().filter(|s| s.account() == account) {
             Some(svc) => svc.clone(),
             None => {
@@ -144,26 +146,25 @@ mod serving {
                 svc
             }
         };
-        offer(lan, &svc).await;
+        lan.offer_files(Some(svc)).await;
     }
 
-    pub(crate) async fn stop_inner(lan: &LanSyncState, files: &DeviceFilesState) {
-        let mut slot = files.service.lock().await;
+    pub(crate) async fn stop_inner(lan: &LanSyncState) {
+        let mut slot = lan.files.service.lock().await;
         if let Some(svc) = slot.take() {
             svc.stop();
         }
-        lan.offer_files(None, false).await;
+        lan.offer_files(None).await;
     }
 
     pub(crate) async fn set_config_inner(
         lan: &LanSyncState,
-        files: &DeviceFilesState,
         config: FileAccessConfig,
     ) -> Result<(), String> {
-        let slot = files.service.lock().await;
+        let slot = lan.files.service.lock().await;
         let svc = slot.as_ref().ok_or("File access is not running")?;
         svc.set_config(config)?;
-        offer(lan, svc).await;
+        lan.offer_files(Some(svc.clone())).await;
         Ok(())
     }
 
@@ -193,60 +194,52 @@ mod serving {
     pub async fn device_files_start(
         app: AppHandle,
         lan: State<'_, LanSyncState>,
-        files: State<'_, DeviceFilesState>,
         account_id: String,
     ) -> Result<(), String> {
         let dir = crate::storage::config::config_dir();
         let (emit, alert) = (emitter(app.clone()), alert(app));
-        start_inner(&lan, &files, dir, account_id, emit, alert).await;
+        start_inner(&lan, dir, account_id, emit, alert).await;
         Ok(())
     }
 
     #[tauri::command]
-    pub async fn device_files_stop(
-        lan: State<'_, LanSyncState>,
-        files: State<'_, DeviceFilesState>,
-    ) -> Result<(), String> {
-        stop_inner(&lan, &files).await;
+    pub async fn device_files_stop(lan: State<'_, LanSyncState>) -> Result<(), String> {
+        stop_inner(&lan).await;
         Ok(())
     }
 
     #[tauri::command]
     pub async fn device_files_get_config(
-        files: State<'_, DeviceFilesState>,
+        lan: State<'_, LanSyncState>,
     ) -> Result<FileAccessConfig, String> {
-        Ok(running(&files)
-            .await
-            .map(|s| s.config())
-            .unwrap_or_default())
+        Ok(running(&lan).await.map(|s| s.config()).unwrap_or_default())
     }
 
     #[tauri::command]
     pub async fn device_files_set_config(
         lan: State<'_, LanSyncState>,
-        files: State<'_, DeviceFilesState>,
         config: FileAccessConfig,
     ) -> Result<(), String> {
-        set_config_inner(&lan, &files, config).await
+        set_config_inner(&lan, config).await
     }
 
     #[tauri::command]
     pub async fn device_files_answer(
-        files: State<'_, DeviceFilesState>,
+        lan: State<'_, LanSyncState>,
         request_id: String,
         answer: Answer,
     ) -> Result<bool, String> {
-        Ok(running(&files)
+        Ok(running(&lan)
             .await
             .is_some_and(|s| s.answer(&request_id, answer)))
     }
 
     #[tauri::command]
     pub async fn device_files_disconnect(
-        files: State<'_, DeviceFilesState>,
+        lan: State<'_, LanSyncState>,
         device_key: String,
     ) -> Result<(), String> {
-        if let Some(svc) = running(&files).await {
+        if let Some(svc) = running(&lan).await {
             svc.disconnect(&device_key);
         }
         Ok(())
@@ -254,27 +247,27 @@ mod serving {
 
     #[tauri::command]
     pub async fn device_files_pending(
-        files: State<'_, DeviceFilesState>,
+        lan: State<'_, LanSyncState>,
     ) -> Result<Vec<ApprovalPrompt>, String> {
-        Ok(running(&files)
-            .await
-            .map(|s| s.pending())
-            .unwrap_or_default())
+        Ok(running(&lan).await.map(|s| s.pending()).unwrap_or_default())
     }
 }
 
 #[cfg(all(test, desktop))]
 mod tests {
     use super::*;
-    use crate::commands::lan_sync::{peers_inner, start_inner as lan_start, Emit};
+    use crate::commands::lan_sync::{
+        peers_inner, start_inner as lan_start, stop_inner as lan_stop, Emit,
+    };
     use crate::commands::sftp::resume::copy_one;
     use crate::commands::sftp::resume::endpoint::LocalFs;
     use crate::commands::sftp::resume::engine_tests::noise;
-    use crate::device_files::policy::{self, hex, AllowedDevice, Answer, FileAccessConfig};
+    use crate::device_files::policy::{
+        self, hex, AllowedDevice, Answer, FileAccessConfig, GRANT_IDLE,
+    };
     use crate::device_files::service::{FileService, REQUEST, SESSIONS};
-    use crate::device_files::DeviceFilesState;
     use crate::error::ErrorCode;
-    use crate::lan_sync::identity::test_identity;
+    use crate::lan_sync::identity::{derive_auth_key, test_identity, DeviceKey, LocalIdentity};
     use crate::sftp::backend::test_tree::Recorder;
     use serde_json::{json, Value};
     use std::future::Future;
@@ -284,9 +277,17 @@ mod tests {
     const ACCOUNT: &str = "acct";
 
     type Seen = Arc<Mutex<Vec<(&'static str, Value)>>>;
+    type Closed = Arc<Mutex<Vec<(String, Option<ErrorCode>)>>>;
 
     fn key_of(id: &str) -> String {
         hex(&test_identity(id).key.public)
+    }
+
+    fn impostor() -> LocalIdentity {
+        LocalIdentity {
+            key: DeviceKey::from_private(derive_auth_key(b"impostor")),
+            ..test_identity("dev-b")
+        }
     }
 
     async fn until<F: Future<Output = bool>>(what: &str, mut cond: impl FnMut() -> F) {
@@ -303,22 +304,16 @@ mod tests {
         }
     }
 
-    async fn lan(id: &str) -> Arc<LanSyncState> {
+    async fn lan(me: LocalIdentity) -> Arc<LanSyncState> {
         let state = Arc::new(LanSyncState::default());
-        lan_start(
-            &state,
-            test_identity(id),
-            vec![vec![7; 32]],
-            Arc::new(|_, _| {}),
-        )
-        .await
-        .unwrap();
+        lan_start(&state, me, vec![vec![7; 32]], Arc::new(|_, _| {}))
+            .await
+            .unwrap();
         state
     }
 
     struct Server {
         lan: Arc<LanSyncState>,
-        files: DeviceFilesState,
         dir: tempfile::TempDir,
         seen: Seen,
     }
@@ -341,7 +336,7 @@ mod tests {
         }
     }
 
-    async fn server(always: &[&str]) -> Server {
+    async fn server_as(me: LocalIdentity, always: &[&str]) -> Server {
         let dir = tempfile::tempdir().unwrap();
         let share = dir.path().join("Shared");
         std::fs::create_dir(&share).unwrap();
@@ -350,23 +345,20 @@ mod tests {
         let seen = Seen::default();
         let sink = seen.clone();
         let emit: Emit = Arc::new(move |name, payload| sink.lock().unwrap().push((name, payload)));
-        let lan = lan("dev-b").await;
-        let files = DeviceFilesState::default();
+        let lan = lan(me).await;
         serving::start_inner(
             &lan,
-            &files,
             dir.path().to_path_buf(),
             ACCOUNT.into(),
             emit,
             Arc::new(|_| {}),
         )
         .await;
-        Server {
-            lan,
-            files,
-            dir,
-            seen,
-        }
+        Server { lan, dir, seen }
+    }
+
+    async fn server(always: &[&str]) -> Server {
+        server_as(test_identity("dev-b"), always).await
     }
 
     impl Server {
@@ -375,7 +367,7 @@ mod tests {
         }
 
         async fn svc(&self) -> Arc<FileService> {
-            self.files.service.lock().await.clone().unwrap()
+            self.lan.files.service.lock().await.clone().unwrap()
         }
 
         fn events(&self, name: &str) -> Vec<Value> {
@@ -384,6 +376,10 @@ mod tests {
                 .filter(|(n, _)| *n == name)
                 .map(|(_, v)| v.clone())
                 .collect()
+        }
+
+        fn prompts(&self) -> usize {
+            self.events(REQUEST).len()
         }
 
         fn open_keys(&self) -> Vec<String> {
@@ -398,9 +394,10 @@ mod tests {
             keys
         }
 
-        async fn until_open(&self, mut want: Vec<String>) {
+        async fn until_open(&self, ids: &[&str]) {
+            let mut want: Vec<String> = ids.iter().map(|id| key_of(id)).collect();
             want.sort();
-            until(&format!("open sessions {want:?}"), || {
+            until(&format!("open sessions {ids:?}"), || {
                 let now = self.open_keys();
                 let want = want.clone();
                 async move { now == want }
@@ -408,33 +405,37 @@ mod tests {
             .await;
         }
 
-        async fn until_pending(&self) -> String {
+        async fn until_pending(&self, count: usize) -> Vec<String> {
             let svc = self.svc().await;
-            until("a pending approval", || {
-                let any = !svc.pending().is_empty();
-                async move { any }
+            until(&format!("{count} pending approvals"), || {
+                let n = svc.pending().len();
+                async move { n == count }
             })
             .await;
-            svc.pending()[0].request_id.clone()
+            svc.pending().into_iter().map(|p| p.request_id).collect()
+        }
+
+        async fn approve(&self, answer: Answer) {
+            for id in self.until_pending(1).await {
+                assert!(self.svc().await.answer(&id, answer));
+            }
         }
 
         async fn set(&self, cfg: FileAccessConfig) {
-            serving::set_config_inner(&self.lan, &self.files, cfg)
-                .await
-                .unwrap();
+            serving::set_config_inner(&self.lan, cfg).await.unwrap();
         }
     }
 
     struct Browser {
-        id: &'static str,
         lan: Arc<LanSyncState>,
         sftp: SftpManager,
+        links: DeviceLinks,
         steps: Arc<Mutex<Vec<Value>>>,
-        closed: Arc<Mutex<Vec<String>>>,
+        closed: Closed,
     }
 
     async fn browser(id: &'static str, server: &Server) -> Browser {
-        let lan = lan(id).await;
+        let lan = lan(test_identity(id)).await;
         lan.meet(&server.lan).await;
         until("dev-b listed with files on", || {
             let lan = lan.clone();
@@ -447,26 +448,36 @@ mod tests {
         })
         .await;
         Browser {
-            id,
             lan,
             sftp: SftpManager::new(),
+            links: DeviceLinks::default(),
             steps: Arc::default(),
             closed: Arc::default(),
         }
     }
 
     impl Browser {
-        async fn connect(&self) -> Result<DeviceConnected, AppError> {
+        async fn relink(&self, relink: Option<&str>) -> Result<DeviceConnected, AppError> {
             let (steps, closed) = (self.steps.clone(), self.closed.clone());
             connect_inner(
                 &self.sftp,
+                &self.links,
                 self.lan.clone(),
                 "dev-b".into(),
-                None,
+                relink,
                 move |s| steps.lock().unwrap().push(json!(s)),
-                Box::new(move |id| closed.lock().unwrap().push(id.to_string())),
+                Box::new(move |id, code| closed.lock().unwrap().push((id.to_string(), code))),
             )
             .await
+        }
+
+        async fn connect(&self) -> Result<DeviceConnected, AppError> {
+            self.relink(None).await
+        }
+
+        async fn approved(&self, s: &Server) -> DeviceConnected {
+            let (connected, ()) = tokio::join!(self.connect(), s.approve(Answer::Once));
+            connected.unwrap()
         }
 
         async fn list(&self, sftp_id: &str, path: &str) -> Result<Vec<String>, AppError> {
@@ -479,6 +490,14 @@ mod tests {
                 .collect();
             names.sort();
             Ok(names)
+        }
+
+        async fn closes(&self, c: &DeviceConnected, code: ErrorCode) {
+            assert!(self.list(&c.sftp_id, "/").await.is_err());
+            assert_eq!(
+                *self.closed.lock().unwrap(),
+                [(c.sftp_id.clone(), Some(code))]
+            );
         }
 
         fn steps(&self) -> Vec<Value> {
@@ -498,8 +517,8 @@ mod tests {
         assert_eq!(a.steps()[0], json!("device_dialing"));
         assert_eq!(a.list(&c.sftp_id, "/").await.unwrap(), ["Shared"]);
         assert_eq!(a.list(&c.sftp_id, "/Shared").await.unwrap(), ["hello.txt"]);
-        assert!(s.events(REQUEST).is_empty());
-        s.until_open(vec![key_of(a.id)]).await;
+        assert_eq!(s.prompts(), 0);
+        s.until_open(&["dev-a"]).await;
     }
 
     #[tokio::test]
@@ -507,7 +526,7 @@ mod tests {
         let s = server(&[]).await;
         let a = browser("dev-a", &s).await;
         let answer = async {
-            let id = s.until_pending().await;
+            let id = s.until_pending(1).await.remove(0);
             assert_eq!(s.events(REQUEST)[0]["requestId"], json!(id));
             assert_eq!(s.events(REQUEST)[0]["newDevice"], json!(true));
             until("the approval step", || {
@@ -533,28 +552,20 @@ mod tests {
     async fn always_answer_is_persisted() {
         let s = server(&[]).await;
         let a = browser("dev-a", &s).await;
-        let answer = async {
-            let id = s.until_pending().await;
-            assert!(s.svc().await.answer(&id, Answer::Always));
-        };
-        let (connected, ()) = tokio::join!(a.connect(), answer);
+        let (connected, ()) = tokio::join!(a.connect(), s.approve(Answer::Always));
         connected.unwrap();
         let saved = policy::load(s.dir.path(), ACCOUNT);
         assert!(saved.always_allows(&key_of("dev-a")));
         assert_eq!(saved.seen_keys, [key_of("dev-a")]);
         a.connect().await.unwrap();
-        assert_eq!(s.events(REQUEST).len(), 1);
+        assert_eq!(s.prompts(), 1);
     }
 
     #[tokio::test]
     async fn deny_maps_to_error_code() {
         let s = server(&[]).await;
         let a = browser("dev-a", &s).await;
-        let answer = async {
-            let id = s.until_pending().await;
-            assert!(s.svc().await.answer(&id, Answer::Deny));
-        };
-        let (connected, ()) = tokio::join!(a.connect(), answer);
+        let (connected, ()) = tokio::join!(a.connect(), s.approve(Answer::Deny));
         assert_eq!(code(connected), Some(ErrorCode::DeviceAccessDenied));
         assert!(s.open_keys().is_empty());
     }
@@ -564,7 +575,7 @@ mod tests {
         let s = server(&[]).await;
         let a = browser("dev-a", &s).await;
         let pause = async {
-            s.until_pending().await;
+            s.until_pending(1).await;
             tokio::time::pause();
         };
         let (connected, ()) = tokio::join!(a.connect(), pause);
@@ -578,12 +589,7 @@ mod tests {
         let big = noise(24 << 20);
         std::fs::write(s.share().join("big.bin"), &big).unwrap();
         let a = browser("dev-a", &s).await;
-        let answer = async {
-            let id = s.until_pending().await;
-            assert!(s.svc().await.answer(&id, Answer::Once));
-        };
-        let (connected, ()) = tokio::join!(a.connect(), answer);
-        let c = connected.unwrap();
+        let c = a.approved(&s).await;
         let src = a.sftp.backend(&c.sftp_id).await.unwrap().endpoint();
         let out = tempfile::tempdir().unwrap();
         let dst = out.path().join("big.bin");
@@ -612,7 +618,20 @@ mod tests {
         copied.unwrap();
         assert!(std::fs::read(&dst).unwrap() == big);
         assert!(svc.admitted() >= 2, "the transfer never reconnected");
-        assert_eq!(s.events(REQUEST).len(), 1);
+        assert_eq!(s.prompts(), 1);
+    }
+
+    #[tokio::test]
+    async fn manual_reconnect_keeps_allow_once() {
+        let s = server(&[]).await;
+        let a = browser("dev-a", &s).await;
+        let c = a.approved(&s).await;
+        s.svc().await.cut();
+        s.until_open(&[]).await;
+        let again = a.relink(Some(&c.sftp_id)).await.unwrap();
+        assert_eq!(again.sftp_id, c.sftp_id);
+        assert_eq!(a.list(&c.sftp_id, "/").await.unwrap(), ["Shared"]);
+        assert_eq!(s.prompts(), 1);
     }
 
     #[tokio::test]
@@ -620,18 +639,17 @@ mod tests {
         let s = server(&["dev-a"]).await;
         let a = browser("dev-a", &s).await;
         let c = a.connect().await.unwrap();
-        s.until_open(vec![key_of("dev-a")]).await;
+        s.until_open(&["dev-a"]).await;
         let mut off = s.svc().await.config();
         off.enabled = false;
         s.set(off).await;
-        s.until_open(vec![]).await;
+        s.until_open(&[]).await;
         until("caps off", || {
             let lan = a.lan.clone();
             async move { peers_inner(&lan).await.iter().all(|p| !p.files) }
         })
         .await;
-        assert!(a.list(&c.sftp_id, "/").await.is_err());
-        assert_eq!(*a.closed.lock().unwrap(), std::slice::from_ref(&c.sftp_id));
+        a.closes(&c, ErrorCode::DeviceFileAccessOff).await;
         assert_eq!(
             code(a.connect().await),
             Some(ErrorCode::DeviceFileAccessOff)
@@ -639,17 +657,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn turning_off_withdraws_pending_prompts() {
+        let s = server(&[]).await;
+        let a = browser("dev-a", &s).await;
+        let off = async {
+            s.until_pending(1).await;
+            let mut cfg = s.svc().await.config();
+            cfg.enabled = false;
+            s.set(cfg).await;
+            std::time::Instant::now()
+        };
+        let (waiting, at) = tokio::join!(a.connect(), off);
+        assert!(at.elapsed() < Duration::from_secs(5));
+        assert_eq!(code(waiting), Some(ErrorCode::DeviceFileAccessOff));
+        assert!(s.svc().await.pending().is_empty());
+        assert!(s.svc().await.config().seen_keys.is_empty());
+    }
+
+    #[tokio::test]
+    async fn requester_hanging_up_withdraws_its_prompt() {
+        let s = server(&[]).await;
+        let a = browser("dev-a", &s).await;
+        tokio::select! {
+            _ = a.connect() => panic!("connected without an answer"),
+            _ = s.until_pending(1) => {}
+        }
+        s.until_pending(0).await;
+    }
+
+    #[tokio::test]
     async fn revoke_closes_that_device_only() {
         let s = server(&["dev-a", "dev-c"]).await;
         let a = browser("dev-a", &s).await;
         let c = browser("dev-c", &s).await;
-        a.connect().await.unwrap();
+        let on_a = a.connect().await.unwrap();
         let on_c = c.connect().await.unwrap();
-        s.until_open(vec![key_of("dev-a"), key_of("dev-c")]).await;
+        s.until_open(&["dev-a", "dev-c"]).await;
         s.set(config(&s.share(), &["dev-c"])).await;
-        s.until_open(vec![key_of("dev-c")]).await;
+        s.until_open(&["dev-c"]).await;
         assert_eq!(c.list(&on_c.sftp_id, "/").await.unwrap(), ["Shared"]);
+        a.closes(&on_a, ErrorCode::DeviceAccessExpired).await;
+        assert_eq!(s.prompts(), 0);
+    }
+
+    #[tokio::test]
+    async fn disconnect_closes_only_that_device() {
+        let s = server(&[]).await;
+        let a = browser("dev-a", &s).await;
+        let c = browser("dev-c", &s).await;
+        let on_a = a.approved(&s).await;
+        let on_c = c.approved(&s).await;
+        s.until_open(&["dev-a", "dev-c"]).await;
+        s.svc().await.disconnect(&key_of("dev-a"));
+        s.until_open(&["dev-c"]).await;
+        assert_eq!(c.list(&on_c.sftp_id, "/").await.unwrap(), ["Shared"]);
+        a.closes(&on_a, ErrorCode::DeviceAccessExpired).await;
+        assert_eq!(s.prompts(), 2);
+    }
+
+    #[tokio::test]
+    async fn idle_grant_expires_without_prompting() {
+        let s = server(&[]).await;
+        let a = browser("dev-a", &s).await;
+        let c = a.approved(&s).await;
+        s.svc().await.cut();
+        s.until_open(&[]).await;
+        tokio::time::pause();
+        tokio::time::advance(GRANT_IDLE + Duration::from_secs(1)).await;
+        tokio::time::resume();
+        until("the pane closes", || async {
+            let _ = a.list(&c.sftp_id, "/").await;
+            !a.closed.lock().unwrap().is_empty()
+        })
+        .await;
+        assert_eq!(
+            *a.closed.lock().unwrap(),
+            [(c.sftp_id.clone(), Some(ErrorCode::DeviceAccessExpired))]
+        );
+        assert_eq!(s.prompts(), 1);
+    }
+
+    #[tokio::test]
+    async fn settings_change_closes_sessions_but_keeps_grants() {
+        let s = server(&[]).await;
+        let a = browser("dev-a", &s).await;
+        let c = a.approved(&s).await;
+        s.until_open(&["dev-a"]).await;
+        let mut cfg = s.svc().await.config();
+        cfg.read_only = true;
+        s.set(cfg).await;
+        s.until_open(&[]).await;
+        assert_eq!(a.list(&c.sftp_id, "/").await.unwrap(), ["Shared"]);
+        s.until_open(&["dev-a"]).await;
+        assert_eq!(s.prompts(), 1);
         assert!(a.closed.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn reopen_refuses_a_different_device_key() {
+        let s = server(&["dev-a"]).await;
+        let a = browser("dev-a", &s).await;
+        let c = a.connect().await.unwrap();
+        lan_stop(&s.lan).await;
+        s.until_open(&[]).await;
+        let fake = server_as(impostor(), &["dev-a"]).await;
+        fake.lan.meet(&a.lan).await;
+        let fake_key = hex(&impostor().key.public);
+        until("the impostor listed as dev-b", || {
+            let (lan, fake_key) = (a.lan.clone(), fake_key.clone());
+            async move {
+                peers_inner(&lan)
+                    .await
+                    .iter()
+                    .any(|p| p.device_id == "dev-b" && p.device_key == fake_key && p.files)
+            }
+        })
+        .await;
+        a.closes(&c, ErrorCode::DeviceUnreachable).await;
+        assert_eq!(fake.svc().await.admitted(), 0);
+        assert_eq!(fake.prompts(), 0);
+    }
+
+    #[tokio::test]
+    async fn stopping_local_sync_ends_file_sessions() {
+        let s = server(&["dev-a"]).await;
+        let a = browser("dev-a", &s).await;
+        a.connect().await.unwrap();
+        s.until_open(&["dev-a"]).await;
+        lan_stop(&s.lan).await;
+        s.until_open(&[]).await;
+        assert!(s.lan.files.service.lock().await.is_none());
     }
 
     #[tokio::test]
@@ -658,15 +795,15 @@ mod tests {
         let a = browser("dev-a", &s).await;
         let c = browser("dev-c", &s).await;
         a.connect().await.unwrap();
-        s.until_open(vec![key_of("dev-a")]).await;
+        s.until_open(&["dev-a"]).await;
         let stop = async {
-            s.until_pending().await;
-            serving::stop_inner(&s.lan, &s.files).await;
+            s.until_pending(1).await;
+            serving::stop_inner(&s.lan).await;
         };
         let (waiting, ()) = tokio::join!(c.connect(), stop);
         assert_eq!(code(waiting), Some(ErrorCode::DeviceFileAccessOff));
-        s.until_open(vec![]).await;
-        assert!(s.files.service.lock().await.is_none());
+        s.until_open(&[]).await;
+        assert!(s.lan.files.service.lock().await.is_none());
         until("caps off", || {
             let lan = a.lan.clone();
             async move { peers_inner(&lan).await.iter().all(|p| !p.files) }

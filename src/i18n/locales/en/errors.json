@@ -35,7 +35,8 @@
     "device-access-denied": "The device declined the request to open its files.",
     "device-approval-timed-out": "Nobody answered the request on the device in time.",
     "device-busy": "That device has too many file sessions open. Close one and try again.",
-    "device-unreachable": "Can't reach that device. Check that it's on and on the same network."
+    "device-unreachable": "Can't reach that device. Check that it's on and on the same network.",
+    "device-access-expired": "Access to this device ended. Open it again to ask for permission."
   },
   "errorAt": {
     "proxy": "Proxy {{proxy}}: {{cause}}",

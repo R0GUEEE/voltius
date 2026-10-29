@@ -1,4 +1,6 @@
 use super::raw_body;
+#[cfg(desktop)]
+use crate::device_files::service::FileService;
 use crate::lan_sync::identity::{
     derive_auth_key, load_or_create_device_key, DeviceKey, LocalIdentity,
 };
@@ -29,6 +31,16 @@ pub struct LanSyncState {
     manager: tokio::sync::Mutex<Option<Manager>>,
     device_key: OnceCell<DeviceKey>,
     relay: Arc<Mutex<Relay>>,
+    #[cfg(desktop)]
+    pub(crate) files: crate::device_files::DeviceFilesState,
+}
+
+#[cfg(desktop)]
+async fn offer_to(manager: &Manager, svc: Option<Arc<FileService>>) {
+    let files = svc.as_ref().is_some_and(|s| s.offers());
+    manager.set_file_service(svc.map(|s| s as Arc<dyn manager::InboundFiles>));
+    let caps = crate::lan_sync::protocol::Caps { files, port: None };
+    manager.set_caps(caps).await;
 }
 
 impl LanSyncState {
@@ -41,15 +53,9 @@ impl LanSyncState {
     }
 
     #[cfg(desktop)]
-    pub(crate) async fn offer_files(
-        &self,
-        svc: Option<Arc<dyn manager::InboundFiles>>,
-        files: bool,
-    ) {
+    pub(crate) async fn offer_files(&self, svc: Option<Arc<FileService>>) {
         if let Some(manager) = self.manager.lock().await.as_ref() {
-            manager.set_file_service(svc);
-            let caps = crate::lan_sync::protocol::Caps { files, port: None };
-            manager.set_caps(caps).await;
+            offer_to(manager, svc).await;
         }
     }
 
@@ -119,6 +125,8 @@ pub async fn start_inner(
 ) -> Result<(), String> {
     let auth_keys = Zeroizing::new(auth_keys);
     let derived = Zeroizing::new(auth_keys.iter().map(|k| derive_auth_key(k)).collect());
+    #[cfg(desktop)]
+    let files = state.files.service.lock().await;
     let mut running = state.manager.lock().await;
     let (epoch, paused) = {
         let mut relay = state.relay();
@@ -143,11 +151,17 @@ pub async fn start_inner(
         }
     };
     tokio::spawn(forward(rx, state.relay.clone(), epoch, emit));
+    #[cfg(desktop)]
+    offer_to(&manager, files.clone()).await;
     *running = Some(manager);
     Ok(())
 }
 
 pub async fn stop_inner(state: &LanSyncState) {
+    #[cfg(desktop)]
+    if let Some(svc) = state.files.service.lock().await.take() {
+        svc.stop();
+    }
     let mut running = state.manager.lock().await;
     if let Some(manager) = running.take() {
         manager.stop().await;

@@ -35,7 +35,8 @@
     "device-access-denied": "Cihaz, dosyalarını açma isteğini reddetti.",
     "device-approval-timed-out": "Cihazdaki isteğe zamanında yanıt verilmedi.",
     "device-busy": "Bu cihazda çok fazla dosya oturumu açık. Birini kapatıp tekrar deneyin.",
-    "device-unreachable": "Bu cihaza ulaşılamıyor. Açık ve aynı ağda olduğundan emin olun."
+    "device-unreachable": "Bu cihaza ulaşılamıyor. Açık ve aynı ağda olduğundan emin olun.",
+    "device-access-expired": "Bu cihaza erişim sona erdi. İzin istemek için yeniden açın."
   },
   "errorAt": {
     "proxy": "Proxy {{proxy}}: {{cause}}",

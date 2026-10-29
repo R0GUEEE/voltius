@@ -42,6 +42,7 @@ export const BACKEND_ERROR_CODES = [
   "device-approval-timed-out",
   "device-busy",
   "device-unreachable",
+  "device-access-expired",
 ] as const;
 
 export type BackendErrorCode = (typeof BACKEND_ERROR_CODES)[number];

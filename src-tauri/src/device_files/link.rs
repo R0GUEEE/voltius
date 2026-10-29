@@ -5,10 +5,12 @@ use crate::lan_sync::stream::SessionStream;
 use crate::sftp::link::SftpReopen;
 use async_trait::async_trait;
 use russh_sftp::client::SftpSession;
+use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
@@ -82,12 +84,19 @@ pub trait FilesSource: Send + Sync {
     async fn dialer(&self) -> Option<FilesDialer>;
 }
 
-pub type OnClosed = Box<dyn Fn(&str) + Send + Sync>;
+pub type OnClosed = Box<dyn Fn(&str, Option<ErrorCode>) + Send + Sync>;
+
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct Pass {
+    grant: Option<String>,
+    key: Option<String>,
+}
 
 pub struct DeviceLink {
     source: Arc<dyn FilesSource>,
     device_id: String,
-    grant: Mutex<Option<String>>,
+    pass: Mutex<Pass>,
+    opened: AtomicBool,
     closed: CancellationToken,
     sftp_id: OnceLock<String>,
     on_closed: OnClosed,
@@ -115,6 +124,7 @@ pub fn refused(reason: Refusal) -> AppError {
             ErrorCode::DeviceBusy,
             "The device has too many open file sessions",
         ),
+        Refusal::Expired => (ErrorCode::DeviceAccessExpired, "Access to the device ended"),
     };
     AppError::coded(code, message)
 }
@@ -123,13 +133,15 @@ impl DeviceLink {
     pub fn new(
         source: Arc<dyn FilesSource>,
         device_id: String,
+        pass: Pass,
         closed: CancellationToken,
         on_closed: OnClosed,
     ) -> Self {
         Self {
             source,
             device_id,
-            grant: Mutex::default(),
+            pass: Mutex::new(pass),
+            opened: AtomicBool::new(false),
             closed,
             sftp_id: OnceLock::new(),
             on_closed,
@@ -140,8 +152,20 @@ impl DeviceLink {
         let _ = self.sftp_id.set(sftp_id);
     }
 
-    fn grant(&self) -> std::sync::MutexGuard<'_, Option<String>> {
-        self.grant.lock().unwrap_or_else(|e| e.into_inner())
+    fn lock(&self) -> std::sync::MutexGuard<'_, Pass> {
+        self.pass.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn pass(&self) -> Pass {
+        self.lock().clone()
+    }
+
+    fn close_with(&self, err: AppError) -> AppError {
+        self.closed.cancel();
+        if let Some(id) = self.sftp_id.get() {
+            (self.on_closed)(id, err.code());
+        }
+        err
     }
 
     pub async fn dial(&self) -> Result<SftpSession, AppError> {
@@ -150,26 +174,56 @@ impl DeviceLink {
             .dialer()
             .await
             .ok_or_else(|| unreachable("local sync is off"))?;
+        let pass = self.pass();
         let req = FilesRequest {
-            grant: self.grant().clone(),
+            grant: pass.grant,
+            reopen: self.opened.load(Ordering::Relaxed),
         };
-        let (stream, reply) = match dialer.open_files(&self.device_id, req).await {
+        let pinned = pass.key.as_deref();
+        let (stream, reply, key) = match dialer.open_files(&self.device_id, req, pinned).await {
             Ok(opened) => opened,
-            Err(FilesDialError::Refused(reason)) => {
-                self.closed.cancel();
-                if let Some(id) = self.sftp_id.get() {
-                    (self.on_closed)(id);
-                }
-                return Err(refused(reason));
+            Err(FilesDialError::Refused(reason)) => return Err(self.close_with(refused(reason))),
+            Err(e @ FilesDialError::WrongDevice) if pinned.is_some() => {
+                return Err(self.close_with(unreachable(e)))
             }
             Err(e) => return Err(unreachable(e)),
         };
-        if let FilesReply::Accepted { grant: Some(g), .. } = reply {
-            *self.grant() = Some(g);
+        {
+            let mut pass = self.lock();
+            pass.key = Some(key);
+            if let FilesReply::Accepted { grant: Some(g), .. } = reply {
+                pass.grant = Some(g);
+            }
         }
-        SftpSession::new(Wire::new(stream, self.closed.clone(), ()))
+        let session = SftpSession::new(Wire::new(stream, self.closed.clone(), ()))
             .await
-            .map_err(unreachable)
+            .map_err(unreachable)?;
+        self.opened.store(true, Ordering::Relaxed);
+        Ok(session)
+    }
+}
+
+#[derive(Default)]
+pub struct DeviceLinks(Mutex<HashMap<String, Weak<DeviceLink>>>);
+
+impl DeviceLinks {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Weak<DeviceLink>>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn pass(&self, sftp_id: &str, device_id: &str) -> Pass {
+        self.lock()
+            .get(sftp_id)
+            .and_then(Weak::upgrade)
+            .filter(|link| link.device_id == device_id)
+            .map(|link| link.pass())
+            .unwrap_or_default()
+    }
+
+    pub fn insert(&self, sftp_id: String, link: &Arc<DeviceLink>) {
+        let mut links = self.lock();
+        links.retain(|_, l| l.strong_count() > 0);
+        links.insert(sftp_id, Arc::downgrade(link));
     }
 }
 

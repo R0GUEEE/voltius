@@ -149,6 +149,9 @@ pub fn decide(
             grant: Some(token.clone()),
         };
     }
+    if req.reopen {
+        return Decision::Refuse(Refusal::Expired);
+    }
     Decision::Ask {
         new_device: !cfg.seen_keys.iter().any(|k| k == key),
     }
@@ -259,7 +262,10 @@ mod tests {
     }
 
     fn req(grant: Option<String>) -> FilesRequest {
-        FilesRequest { grant }
+        FilesRequest {
+            grant,
+            reopen: false,
+        }
     }
 
     #[test]
@@ -379,6 +385,33 @@ mod tests {
         assert!(grants.valid(&b, "bb", now));
         grants.clear();
         assert!(!grants.valid(&b, "bb", now));
+    }
+
+    #[test]
+    fn reopen_never_asks() {
+        let cfg = cfg_with(&[]);
+        let mut grants = Grants::default();
+        let t = grants.issue("aa");
+        let now = Instant::now();
+        let reopen = |grant| FilesRequest {
+            grant,
+            reopen: true,
+        };
+        assert_eq!(
+            decide(&cfg, &grants, "aa", &reopen(None), 0, now),
+            Decision::Refuse(Refusal::Expired)
+        );
+        assert_eq!(
+            decide(&cfg, &grants, "bb", &reopen(Some(t.clone())), 0, now),
+            Decision::Refuse(Refusal::Expired)
+        );
+        assert_eq!(
+            decide(&cfg, &grants, "aa", &reopen(Some(t.clone())), 0, now),
+            Decision::Accept {
+                read_only: true,
+                grant: Some(t)
+            }
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ use super::server::SharedFs;
 use crate::commands::lan_sync::Emit;
 use crate::lan_sync::handshake::Session;
 use crate::lan_sync::manager::InboundFiles;
-use crate::lan_sync::protocol::{FilesReply, FilesRequest, Frame, Hello, Refusal};
+use crate::lan_sync::protocol::{FilesReply, FilesRequest, Frame, Hello, Refusal, MAX_FRAME};
 use crate::lan_sync::route::Route;
 use crate::lan_sync::stream::SessionStream;
 use serde::Serialize;
@@ -47,6 +47,7 @@ struct Book {
     grants: Grants,
     sessions: HashMap<u64, Live>,
     next: u64,
+    withdraw: CancellationToken,
 }
 
 impl Book {
@@ -54,6 +55,17 @@ impl Book {
         for live in self.sessions.values().filter(|l| which(l)) {
             live.stop.cancel();
         }
+    }
+
+    fn forget(&mut self, key: &str) {
+        self.grants.revoke_key(key);
+        self.close(|l| l.info.device_key == key);
+    }
+
+    fn forget_all(&mut self) {
+        self.grants.clear();
+        self.close(|_| true);
+        std::mem::take(&mut self.withdraw).cancel();
     }
 
     fn listing(&self) -> Vec<ActiveSession> {
@@ -195,8 +207,7 @@ impl FileService {
         let old = std::mem::replace(&mut book.cfg, cfg);
         let new = &book.cfg;
         if !offers(new) {
-            book.grants.clear();
-            book.close(|_| true);
+            book.forget_all();
             return Ok(());
         }
         if old.folders != new.folders || old.read_only != new.read_only {
@@ -209,23 +220,18 @@ impl FileService {
             .map(|d| d.device_key.clone())
             .collect();
         for key in &revoked {
-            book.grants.revoke_key(key);
-            book.close(|l| l.info.device_key == *key);
+            book.forget(key);
         }
         Ok(())
     }
 
     pub fn disconnect(&self, key: &str) {
-        let mut book = self.core.lock();
-        book.grants.revoke_key(key);
-        book.close(|l| l.info.device_key == key);
+        self.core.lock().forget(key);
     }
 
     pub fn stop(&self) {
         self.stopped.cancel();
-        let mut book = self.core.lock();
-        book.grants.clear();
-        book.close(|_| true);
+        self.core.lock().forget_all();
     }
 
     fn check(&self, book: &mut Book, key: &str, req: &FilesRequest) -> Result<Decision, Refusal> {
@@ -250,6 +256,7 @@ impl FileService {
 
     async fn ask(
         &self,
+        session: &mut Session,
         peer: &Hello,
         key: &str,
         route: Route,
@@ -263,18 +270,20 @@ impl FileService {
             route,
             new_device,
         };
-        let pending = {
-            let _book = self.core.lock();
+        let (pending, withdraw) = {
+            let book = self.core.lock();
             if self.broker.pending().len() >= MAX_PENDING {
                 return Err(Refusal::Busy);
             }
-            self.broker.register(prompt.clone())
+            (self.broker.register(prompt.clone()), book.withdraw.clone())
         };
         (self.core.emit)(REQUEST, json!(prompt));
         (self.alert)(&prompt);
+        // The requester sends nothing before the reply, so any read result means it hung up.
         let answer = tokio::select! {
             answer = pending.wait(APPROVAL_WAIT) => answer,
-            _ = self.stopped.cancelled() => return Err(Refusal::Off),
+            _ = withdraw.cancelled() => return Err(Refusal::Off),
+            _ = session.recv_max(MAX_FRAME) => return Err(Refusal::Denied),
         };
         let always = match answer {
             None => return Err(Refusal::TimedOut),
@@ -336,12 +345,13 @@ impl FileService {
         &self,
         peer: &Hello,
         route: Route,
+        session: &mut Session,
         mut req: FilesRequest,
     ) -> Result<Admitted, Refusal> {
         let key = hex(&peer.device_key);
         let decision = self.check(&mut self.core.lock(), &key, &req)?;
         if let Decision::Ask { new_device } = decision {
-            req.grant = self.ask(peer, &key, route, new_device).await?;
+            req.grant = self.ask(session, peer, &key, route, new_device).await?;
         }
         self.admit(&key, &peer.device_name, &req)
     }
@@ -361,7 +371,7 @@ impl FileService {
 #[async_trait::async_trait]
 impl InboundFiles for FileService {
     async fn serve(&self, mut session: Session, peer: Hello, route: Route, req: FilesRequest) {
-        let admitted = self.authorize(&peer, route, req).await;
+        let admitted = self.authorize(&peer, route, &mut session, req).await;
         let reply = match &admitted {
             Ok(a) => FilesReply::Accepted {
                 read_only: a.read_only,
@@ -377,5 +387,115 @@ impl InboundFiles for FileService {
         };
         let wire = Wire::new(SessionStream::new(session), a.stop, a.ending);
         russh_sftp::server::run(wire, SharedFs::new(a.roots, a.read_only)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device_files::policy::AllowedDevice;
+    use crate::lan_sync::identity::test_identity;
+    use crate::lan_sync::stream::tests::sessions;
+    use std::time::Duration;
+
+    fn hello(id: &str) -> Hello {
+        let me = test_identity(id);
+        Hello {
+            device_id: me.device_id,
+            device_name: me.device_name,
+            platform: me.platform,
+            device_key: me.key.public,
+            device_sig: vec![],
+        }
+    }
+
+    fn service(always: &[&str]) -> (Arc<FileService>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = FileAccessConfig {
+            enabled: true,
+            folders: vec![dir.path().to_string_lossy().into_owned()],
+            allowed: always
+                .iter()
+                .map(|id| AllowedDevice {
+                    device_key: hex(&test_identity(id).key.public),
+                    always: true,
+                    ..AllowedDevice::default()
+                })
+                .collect(),
+            ..FileAccessConfig::default()
+        };
+        policy::save(dir.path(), "acct", &cfg).unwrap();
+        let svc = FileService::new(
+            dir.path().to_path_buf(),
+            "acct".into(),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
+        );
+        (Arc::new(svc), dir)
+    }
+
+    async fn request(svc: &Arc<FileService>, id: &str) -> Session {
+        let (client, server) = sessions().await;
+        let (svc, peer) = (svc.clone(), hello(id));
+        tokio::spawn(async move {
+            svc.serve(server, peer, Route::Lan, FilesRequest::default())
+                .await
+        });
+        client
+    }
+
+    async fn reply(client: &mut Session) -> FilesReply {
+        match client.recv().await.unwrap() {
+            Frame::FilesReply(reply) => reply,
+            other => panic!("expected a reply, got {other:?}"),
+        }
+    }
+
+    fn busy() -> FilesReply {
+        FilesReply::Refused {
+            reason: Refusal::Busy,
+        }
+    }
+
+    #[tokio::test]
+    async fn ninth_session_is_busy() {
+        let (svc, _dir) = service(&["d0", "d1", "d2"]);
+        let mut open = Vec::new();
+        for id in ["d0", "d1"] {
+            for _ in 0..4 {
+                let mut client = request(&svc, id).await;
+                assert!(matches!(
+                    reply(&mut client).await,
+                    FilesReply::Accepted { .. }
+                ));
+                open.push(client);
+            }
+        }
+        let mut ninth = request(&svc, "d2").await;
+        assert_eq!(reply(&mut ninth).await, busy());
+    }
+
+    #[tokio::test]
+    async fn fifth_pending_approval_is_busy() {
+        let (svc, _dir) = service(&[]);
+        let mut waiting = Vec::new();
+        for _ in 0..4 {
+            waiting.push(request(&svc, "d0").await);
+        }
+        while svc.pending().len() < 4 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let mut fifth = request(&svc, "d1").await;
+        assert_eq!(reply(&mut fifth).await, busy());
+        svc.stop();
+        for client in &mut waiting {
+            assert_eq!(
+                reply(client).await,
+                FilesReply::Refused {
+                    reason: Refusal::Off
+                }
+            );
+        }
+        assert!(svc.pending().is_empty());
     }
 }

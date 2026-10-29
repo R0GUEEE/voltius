@@ -709,8 +709,12 @@ impl FilesDialer {
         &self,
         device_id: &str,
         req: FilesRequest,
-    ) -> Result<(SessionStream, FilesReply), FilesDialError> {
+        pinned: Option<&str>,
+    ) -> Result<(SessionStream, FilesReply, String), FilesDialError> {
         let (addr, key) = self.0.files_target(device_id)?;
+        if pinned.is_some_and(|p| p != key) {
+            return Err(FilesDialError::WrongDevice);
+        }
         let permit = self.0.outbound_permit(true).await;
         let stream = connect(addr).await.map_err(FilesDialError::Unreachable)?;
         let mut link = secure(stream, addr, true, &self.0).await?;
@@ -727,7 +731,7 @@ impl FilesDialer {
             Frame::FilesReply(FilesReply::Refused { reason }) => {
                 Err(FilesDialError::Refused(reason))
             }
-            Frame::FilesReply(reply) => Ok((SessionStream::new(link.session), reply)),
+            Frame::FilesReply(reply) => Ok((SessionStream::new(link.session), reply, key)),
             other => Err(FilesDialError::Unreachable(format!("unexpected {other:?}"))),
         }
     }
@@ -1460,7 +1464,7 @@ mod tests {
     async fn open_err(m: &Manager, id: &str) -> FilesDialError {
         match m
             .files_dialer()
-            .open_files(id, FilesRequest { grant: None })
+            .open_files(id, FilesRequest::default(), None)
             .await
         {
             Ok(_) => panic!("file connection to {id} opened"),
@@ -1481,9 +1485,9 @@ mod tests {
         synced(&a, &b).await;
         let before = (conn_of(&a, "dev-b"), conn_of(&b, "dev-a"));
 
-        let (_stream, reply) = a
+        let (_stream, reply, _) = a
             .files_dialer()
-            .open_files("dev-b", FilesRequest { grant: None })
+            .open_files("dev-b", FilesRequest::default(), None)
             .await
             .unwrap();
         assert_eq!(
@@ -1495,7 +1499,7 @@ mod tests {
         );
         assert_eq!(
             svc.served.lock().unwrap()[..],
-            [("dev-a".into(), Route::Lan, FilesRequest { grant: None })]
+            [("dev-a".into(), Route::Lan, FilesRequest::default())]
         );
         until("handshake permits released", || idle(&a) && idle(&b)).await;
         assert_eq!((conn_of(&a, "dev-b"), conn_of(&b, "dev-a")), before);
@@ -1622,9 +1626,9 @@ mod tests {
         next_event(&mut eb, files_on("dev-a")).await;
         assert!(dialable(&b).is_empty());
 
-        let (_stream, _reply) = b
+        let (_stream, _reply, _) = b
             .files_dialer()
-            .open_files("dev-a", FilesRequest { grant: None })
+            .open_files("dev-a", FilesRequest::default(), None)
             .await
             .unwrap();
         assert_eq!(served(&svc), 1);

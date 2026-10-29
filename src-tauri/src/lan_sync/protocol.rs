@@ -36,9 +36,11 @@ pub struct Caps {
     pub port: Option<u16>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
 pub struct FilesRequest {
     pub grant: Option<String>,
+    #[serde(default)]
+    pub reopen: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -48,6 +50,7 @@ pub enum Refusal {
     Denied,
     TimedOut,
     Busy,
+    Expired,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -227,9 +230,10 @@ mod tests {
                 files: false,
                 port: None,
             }),
-            Frame::Files(FilesRequest { grant: None }),
+            Frame::Files(FilesRequest::default()),
             Frame::Files(FilesRequest {
                 grant: Some("ab".repeat(32)),
+                reopen: true,
             }),
             Frame::FilesReply(FilesReply::Accepted {
                 read_only: true,
@@ -251,6 +255,9 @@ mod tests {
             Frame::FilesReply(FilesReply::Refused {
                 reason: Refusal::Busy,
             }),
+            Frame::FilesReply(FilesReply::Refused {
+                reason: Refusal::Expired,
+            }),
             Frame::Blob(vec![1, 2, 3]),
             Frame::Nudge,
             Frame::Bye,
@@ -266,6 +273,18 @@ mod tests {
         let mut buf = vec![KIND_FILES];
         buf.extend_from_slice(format!(r#"{{"grant":"{grant}"}}"#).as_bytes());
         buf
+    }
+
+    #[test]
+    fn files_request_without_reopen_still_decodes() {
+        let buf = files_wire(&"a".repeat(64));
+        assert_eq!(
+            decode(&buf).unwrap(),
+            Frame::Files(FilesRequest {
+                grant: Some("a".repeat(64)),
+                reopen: false,
+            })
+        );
     }
 
     #[test]

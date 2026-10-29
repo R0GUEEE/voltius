@@ -257,8 +257,6 @@ pub fn run() {
 
             #[cfg(desktop)]
             app.manage(updater::UpdaterState::default());
-            #[cfg(desktop)]
-            app.manage(device_files::DeviceFilesState::default());
             app.manage(KnownHostsStore::load());
             app.manage(app_lock::AppLock::load());
             app.manage(app_lock::LastActive::load());
@@ -284,6 +282,7 @@ pub fn run() {
         .manage(SftpManager::new())
         .manage(SerialSessionManager::new())
         .manage(commands::lan_sync::LanSyncState::default())
+        .manage(device_files::link::DeviceLinks::default())
         .invoke_handler(tauri::generate_handler![
             force_quit,
             updater::updater_restart,
