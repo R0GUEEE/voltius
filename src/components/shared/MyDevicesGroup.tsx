@@ -29,6 +29,11 @@ function subtitle(t: TFunction, d: MyDevice): string {
   return routeLabel(t, d.route ?? "lan");
 }
 
+export function myDevicesVisible(devices: MyDevice[], query: string, blocked: boolean): boolean {
+  const matches = searchMatcher(query);
+  return blocked || devices.some((d) => matches(d.name));
+}
+
 export function MyDevicesGroup({ density, onPick, selectedDeviceId, query = "" }: {
   density: HostPickerDensity;
   onPick: (device: MyDevice) => void;
@@ -42,7 +47,7 @@ export function MyDevicesGroup({ density, onPick, selectedDeviceId, query = "" }
   const matches = searchMatcher(query);
   const shown = devices.filter((d) => matches(d.name));
   const fix = blocked ? blockedFix(t, platform) : null;
-  if (!fix && shown.length === 0) return null;
+  if (!myDevicesVisible(devices, query, blocked)) return null;
 
   return (
     <div data-my-devices>

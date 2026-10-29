@@ -1,5 +1,5 @@
 import { test, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
 import type { Connection, Folder } from "@/types";
 
 vi.mock("react-i18next", () => ({
@@ -10,8 +10,22 @@ vi.mock("@iconify/react", () => ({ Icon: () => null }));
 vi.mock("@/components/shared/ConnectionAvatar", () => ({ ConnectionAvatar: () => null }));
 vi.mock("./BottomSheet", () => ({ default: ({ children }: { children: React.ReactNode }) => <div>{children}</div> }));
 
-const devices = vi.hoisted(() => ({ rows: [] as unknown[] }));
-vi.mock("@/services/myDevices", async (orig) => ({ ...(await orig<typeof import("@/services/myDevices")>()), useMyDevices: () => devices.rows }));
+const devices = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  const state = { rows: [] as unknown[] };
+  return {
+    get rows() { return state.rows; },
+    set rows(v: unknown[]) { state.rows = v; listeners.forEach((l) => l()); },
+    subscribe: (l: () => void) => { listeners.add(l); return () => listeners.delete(l); },
+  };
+});
+vi.mock("@/services/myDevices", async (orig) => {
+  const { useSyncExternalStore } = await import("react");
+  return {
+    ...(await orig<typeof import("@/services/myDevices")>()),
+    useMyDevices: () => useSyncExternalStore(devices.subscribe, () => devices.rows),
+  };
+});
 
 import SftpHostPickerSheet from "./SftpHostPickerSheet";
 import { useConnectionStore } from "@/stores/connectionStore";
@@ -110,13 +124,16 @@ test("picking a host reports a connection target", () => {
   expect(onPick).toHaveBeenCalledWith({ kind: "connection", id: "home-box" });
 });
 
-test("the empty label shows with no hosts and no devices, and gives way to device rows", () => {
+test("the empty label follows device changes that arrive after the sheet opened", () => {
   useConnectionStore.setState({ connections: [], teamConnections: {} });
-  const { rerender } = render(<SftpHostPickerSheet onPick={() => {}} onClose={() => {}} />);
-  expect(screen.getByText("mobile.sheets.sftpHostPicker.noSshHosts")).toBeTruthy();
+  render(<SftpHostPickerSheet onPick={() => {}} onClose={() => {}} />);
+  const label = () => screen.queryByText("mobile.sheets.sftpHostPicker.noSshHosts");
+  expect(label()).toBeTruthy();
 
-  devices.rows = [{ deviceId: "d1", deviceKey: "k", name: "Work PC", platform: "windows", state: "ready", route: "lan", lastSeen: null }];
-  rerender(<SftpHostPickerSheet onPick={() => {}} onClose={() => {}} />);
+  act(() => { devices.rows = [{ deviceId: "d1", deviceKey: "k", name: "Work PC", platform: "windows", state: "ready", route: "lan", lastSeen: null }]; });
   expect(screen.getByText("Work PC")).toBeTruthy();
-  expect(screen.queryByText("mobile.sheets.sftpHostPicker.noSshHosts")).toBeNull();
+  expect(label()).toBeNull();
+
+  act(() => { devices.rows = []; });
+  expect(label()).toBeTruthy();
 });
