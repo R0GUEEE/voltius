@@ -216,7 +216,10 @@ impl FileService {
         let revoked: Vec<String> = old
             .allowed
             .iter()
-            .filter(|d| d.always && !new.always_allows(&d.device_key))
+            .filter(|d| {
+                let listed = new.allowed.iter().any(|n| n.device_key == d.device_key);
+                !listed || (d.always && !new.always_allows(&d.device_key))
+            })
             .map(|d| d.device_key.clone())
             .collect();
         for key in &revoked {
@@ -497,5 +500,33 @@ mod tests {
             );
         }
         assert!(svc.pending().is_empty());
+    }
+
+    #[tokio::test]
+    async fn revoking_a_once_allowed_entry_closes_its_session() {
+        let (svc, _dir) = service(&[]);
+        let mut client = request(&svc, "d0").await;
+        while svc.pending().is_empty() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let key = hex(&test_identity("d0").key.public);
+        assert!(svc.answer(&svc.pending()[0].request_id, Answer::Once));
+        assert!(matches!(
+            reply(&mut client).await,
+            FilesReply::Accepted { .. }
+        ));
+        let mut cfg = svc.config();
+        if !cfg.allowed.iter().any(|d| d.device_key == key) {
+            cfg.allowed.push(AllowedDevice {
+                device_key: key.clone(),
+                ..AllowedDevice::default()
+            });
+        }
+        assert!(cfg.allowed.iter().all(|d| !d.always));
+        svc.set_config(cfg.clone()).unwrap();
+        cfg.allowed.retain(|d| d.device_key != key);
+        svc.set_config(cfg).unwrap();
+        let closed = tokio::time::timeout(Duration::from_secs(2), client.recv()).await;
+        assert!(matches!(closed, Ok(Err(_))), "session still open");
     }
 }
