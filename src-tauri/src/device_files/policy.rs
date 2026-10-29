@@ -171,17 +171,22 @@ pub struct Broker {
     pending: Mutex<HashMap<String, (ApprovalPrompt, oneshot::Sender<Answer>)>>,
 }
 
+pub fn new_request_id() -> String {
+    random_hex(16)
+}
+
 impl Broker {
-    pub async fn ask(&self, mut prompt: ApprovalPrompt, wait: Duration) -> Option<Answer> {
-        let id = random_hex(16);
-        prompt.request_id = id.clone();
+    pub fn register(&self, prompt: ApprovalPrompt) -> PendingApproval<'_> {
+        let id = prompt.request_id.clone();
         let (tx, rx) = oneshot::channel();
         self.pending
             .lock()
             .unwrap()
             .insert(id.clone(), (prompt, tx));
-        let _cleanup = Cleanup { broker: self, id };
-        tokio::time::timeout(wait, rx).await.ok()?.ok()
+        PendingApproval {
+            cleanup: Cleanup { broker: self, id },
+            rx,
+        }
     }
 
     pub fn answer(&self, request_id: &str, a: Answer) -> bool {
@@ -198,6 +203,21 @@ impl Broker {
             .values()
             .map(|(p, _)| p.clone())
             .collect()
+    }
+}
+
+pub struct PendingApproval<'a> {
+    cleanup: Cleanup<'a>,
+    rx: oneshot::Receiver<Answer>,
+}
+
+impl PendingApproval<'_> {
+    pub fn id(&self) -> &str {
+        &self.cleanup.id
+    }
+
+    pub async fn wait(self, wait: Duration) -> Option<Answer> {
+        tokio::time::timeout(wait, self.rx).await.ok()?.ok()
     }
 }
 
@@ -390,26 +410,33 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn broker_times_out_to_none() {
         let broker = Broker::default();
-        let r = broker.ask(prompt("x"), Duration::from_secs(60)).await;
+        let r = broker
+            .register(prompt("x"))
+            .wait(Duration::from_secs(60))
+            .await;
         assert_eq!(r, None);
         assert!(broker.pending().is_empty());
     }
 
+    #[test]
+    fn register_is_visible_before_wait() {
+        let broker = Broker::default();
+        let _p = broker.register(prompt("my-id"));
+        let pending = broker.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, "my-id");
+    }
+
     #[tokio::test]
     async fn broker_answer_resolves_once() {
-        let broker = std::sync::Arc::new(Broker::default());
-        let b = broker.clone();
-        let waiter = tokio::spawn(async move { b.ask(prompt("x"), APPROVAL_WAIT).await });
-        let id = loop {
-            if let Some(p) = broker.pending().first() {
-                break p.request_id.clone();
-            }
-            tokio::task::yield_now().await;
-        };
-        assert!(broker.answer(&id, Answer::Once));
-        assert!(!broker.answer(&id, Answer::Always));
-        assert_eq!(waiter.await.unwrap(), Some(Answer::Once));
+        let broker = Broker::default();
+        let p = broker.register(prompt("x"));
+        assert_eq!(p.id(), "x");
+        assert!(broker.answer("x", Answer::Once));
+        assert!(!broker.answer("x", Answer::Always));
+        assert_eq!(p.wait(APPROVAL_WAIT).await, Some(Answer::Once));
         assert!(!broker.answer("nope", Answer::Deny));
+        assert!(broker.pending().is_empty());
     }
 
     #[test]
