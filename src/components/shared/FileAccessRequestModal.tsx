@@ -43,7 +43,10 @@ export function FileAccessRequestModal() {
   const answer = useCallback((requestId: string, choice: FileAnswer) => {
     if (answered.current === requestId) return;
     answered.current = requestId;
-    answerFileRequest(requestId, choice).catch(logFailure("answer file access request"));
+    answerFileRequest(requestId, choice).catch((e) => {
+      if (answered.current === requestId) answered.current = null;
+      logFailure("answer file access request")(e);
+    });
   }, []);
 
   if (!prompt) return null;
@@ -73,7 +76,7 @@ export function FileAccessRequestModal() {
             </span>
           </div>
         </div>
-        {config && (
+        {config && config.folders.length > 0 && (
           <p className="text-sm leading-normal text-(--t-text-secondary)">
             {t("layout.deviceFiles.folders", { folders })}{" "}
             {t(config.readOnly ? "layout.deviceFiles.readOnly" : "layout.deviceFiles.readWrite")}

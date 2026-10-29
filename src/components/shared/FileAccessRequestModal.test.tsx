@@ -47,14 +47,13 @@ afterEach(() => {
 describe("FileAccessRequestModal", () => {
   test("shows_oldest_prompt_with_folder_names", () => {
     useDeviceFilesStore.setState({ pending: [prompt("a"), prompt("b")] });
-    const { container } = render(<FileAccessRequestModal />);
+    render(<FileAccessRequestModal />);
     const text = document.body.textContent ?? "";
     expect(text).toContain("Dev-a");
     expect(text).not.toContain("Dev-b");
     expect(text).toContain("Downloads, Pictures");
     expect(text).not.toContain("home/me");
     expect(text).toContain("layout.deviceFiles.readWrite");
-    expect(container).toBeTruthy();
   });
 
   test("new_device_badge", () => {
@@ -80,6 +79,17 @@ describe("FileAccessRequestModal", () => {
     fireEvent.keyDown(document, { key: "Escape" });
     expect(answerFileRequest).toHaveBeenCalledTimes(1);
     expect(answerFileRequest).toHaveBeenCalledWith("a", "deny");
+  });
+
+  test("failed_answer_can_be_retried", async () => {
+    vi.mocked(answerFileRequest).mockRejectedValueOnce(new Error("boom"));
+    useDeviceFilesStore.setState({ pending: [prompt("a")] });
+    const { getByText } = render(<FileAccessRequestModal />);
+    await act(async () => {
+      fireEvent.click(getByText("layout.deviceFiles.once"));
+    });
+    fireEvent.click(getByText("layout.deviceFiles.once"));
+    expect(answerFileRequest).toHaveBeenCalledTimes(2);
   });
 
   test("answer_advances_to_next", () => {
