@@ -1,0 +1,150 @@
+name: ios
+
+# Builds an unsigned iOS .ipa on a macOS runner: `tauri ios init` generates the
+# Xcode project from project.yml, xcodebuild compiles the Rust static library
+# and the Swift/ObjC shell, and the .app is zipped into Payload/ by hand so the
+# result installs through any of the usual sideloading routes (SideStore,
+# AltStore, TrollStore, Sideloadly) — each of those re-signs with its own
+# certificate. There is no signed/App-Store path here: that needs a team ID and
+# a provisioning profile, which this repo does not carry.
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/ios]
+    paths:
+      - 'src-tauri/**'
+      - 'src/**'
+      - 'Cargo.lock'
+      - '.github/workflows/ios.yml'
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: pnpm
+
+      - name: Install Rust (pinned by rust-toolchain.toml) + iOS target
+        run: |
+          rustup show
+          rustup target add aarch64-apple-ios
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          key: ios
+
+      - name: Frontend + seeded plugin bundles
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Ensure xcodegen
+        run: command -v xcodegen > /dev/null || brew install xcodegen
+
+      # gen/ is gitignored and machine-specific (the project embeds the absolute
+      # path of this run's tauri CLI), so it is generated per build rather than
+      # committed. `--ci` keeps the generator from prompting.
+      - name: Generate the Xcode project
+        run: pnpm tauri ios init --ci
+
+      # The generator only writes what Tauri can express. These keys cannot be
+      # expressed in tauri.conf.json and the app is broken or degraded without
+      # them, so they are merged into the generated Info.plist here.
+      - name: Info.plist — iOS-only keys
+        run: |
+          python3 - <<'PY'
+          import glob, plistlib, sys
+
+          plists = glob.glob("src-tauri/gen/apple/*_iOS/Info.plist")
+          if len(plists) != 1:
+              sys.exit(f"expected exactly one Info.plist, found {plists}")
+          path = plists[0]
+          with open(path, "rb") as f:
+              info = plistlib.load(f)
+
+          info.update({
+              # iOS 14+ requires a usage string before an app may touch the local
+              # network; without it every SSH/SFTP connection to a LAN host is
+              # refused and the prompt is never shown.
+              "NSLocalNetworkUsageDescription":
+                  "Voltius connects to SSH, SFTP and other servers on your local network.",
+              "NSFaceIDUsageDescription":
+                  "Voltius uses Face ID to unlock your vault and app lock.",
+              # Make SFTP downloads and exported configs reachable in Files.app.
+              "UIFileSharingEnabled": True,
+              "LSSupportsOpeningDocumentsInPlace": True,
+              # rsync/AES/ChaCha in the SSH stack is standard, not "non-exempt".
+              "ITSAppUsesNonExemptEncryption": False,
+          })
+          with open(path, "wb") as f:
+              plistlib.dump(info, f)
+          print("patched", path)
+          print("\n".join(sorted(info)))
+          PY
+
+      - name: Build (unsigned)
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          PROJ=$(ls -d src-tauri/gen/apple/*.xcodeproj | head -n 1)
+          SCHEME=$(xcodebuild -list -json -project "$PROJ" \
+            | python3 -c 'import json,sys; s=json.load(sys.stdin)["project"]["schemes"]; print([x for x in s if x.endswith("_iOS")][0])')
+          echo "project: $PROJ"
+          echo "scheme:  $SCHEME"
+          xcodebuild \
+            -project "$PROJ" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            build | tee build/xcodebuild.log
+
+      - name: Package the .ipa
+        run: |
+          set -euo pipefail
+          APP=$(find build/ios/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -n 1)
+          test -n "$APP"
+          rm -rf build/Payload build/*.ipa
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+          # No explicit directory entries: several sideloaders mis-derive the
+          # bundle root when every entry is a directory.
+          (cd build && zip -qry -D Voltius-ios-unsigned.ipa Payload)
+          ls -l build/Voltius-ios-unsigned.ipa
+          shasum -a 256 build/Voltius-ios-unsigned.ipa | tee build/Voltius-ios-unsigned.ipa.sha256
+
+      - name: Upload .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: voltius-ios-ipa
+          path: |
+            build/Voltius-ios-unsigned.ipa
+            build/Voltius-ios-unsigned.ipa.sha256
+          retention-days: 30
+
+      - name: Upload logs and the generated project
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voltius-ios-build-logs
+          path: |
+            build/xcodebuild.log
+          retention-days: 7
+          if-no-files-found: ignore

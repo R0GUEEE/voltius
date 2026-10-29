@@ -98,6 +98,17 @@ fn init_keychain_store() -> keyring_core::Result<()> {
     keyring_core::set_default_store(windows_native_keyring_store::Store::new_with_configuration(
         &std::collections::HashMap::<&str, &str>::new(),
     )?);
+    #[cfg(target_os = "ios")]
+    {
+        // iOS only exposes the data-protection keychain (there is no classic
+        // macOS-style "keychain" store), and an app can only ever see its own
+        // access group — so the bundle wrapper macOS needs is pointless here.
+        keyring_core::set_default_store(
+            apple_native_keyring_store::protected::Store::new_with_configuration(
+                &std::collections::HashMap::<&str, &str>::new(),
+            )?,
+        );
+    }
     #[cfg(target_os = "android")]
     keyring_core::set_default_store(crate::keychain_android::Store::new());
     Ok(())
@@ -227,10 +238,11 @@ pub fn run() {
             // Verbose logging auto-reverts on every launch: always start at Info.
             log::set_max_level(log::LevelFilter::Info);
 
-            // On Android `dirs::config_dir()` resolves to an unwritable cwd, so
-            // pin generic file storage (connections, plugins, identities, …) to
-            // the app's scoped data dir — the same dir the vault already uses.
-            #[cfg(target_os = "android")]
+            // On Android `dirs::config_dir()` resolves to an unwritable cwd and on
+            // iOS it resolves to nothing at all, so pin generic file storage
+            // (connections, plugins, identities, …) to the app's scoped data dir —
+            // the same dir the vault already uses.
+            #[cfg(any(target_os = "android", target_os = "ios"))]
             if let Ok(dir) = app.path().app_data_dir() {
                 crate::storage::config::set_config_dir(dir.join("voltius"));
             }

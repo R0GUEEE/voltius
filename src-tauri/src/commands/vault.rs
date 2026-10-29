@@ -76,10 +76,33 @@ fn raw_machine_id() -> Option<String> {
     machine_uid::get().ok()
 }
 
+/// On iOS the only stable, per-vendor identifier an app may read is
+/// `UIDevice.identifierForVendor` (a UUID that survives reinstalls while any app
+/// from the same vendor stays installed). It is fetched through the ObjC runtime
+/// so no `objc2-ui-kit` dependency is needed just for two message sends.
 #[cfg(target_os = "ios")]
 fn raw_machine_id() -> Option<String> {
-    // TODO(ios): identifierForVendor
-    None
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::NSString;
+
+    unsafe {
+        let device: *mut AnyObject = msg_send![class!(UIDevice), currentDevice];
+        if device.is_null() {
+            return None;
+        }
+        // Nil until the device is unlocked for the first time after a reboot.
+        let vendor: *mut AnyObject = msg_send![device, identifierForVendor];
+        if vendor.is_null() {
+            return None;
+        }
+        let uuid: *mut NSString = msg_send![vendor, UUIDString];
+        if uuid.is_null() {
+            return None;
+        }
+        let s = (*uuid).to_string();
+        (!s.is_empty()).then_some(s)
+    }
 }
 
 #[cfg(target_os = "android")]

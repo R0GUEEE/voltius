@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 /// Overrides the base config directory. Set once at startup on platforms where
-/// `dirs::config_dir()` doesn't resolve to writable, app-scoped storage — most
-/// importantly Android, where it falls back to an unwritable cwd ("/"). When
-/// set, `config_dir()` uses this instead. See `set_config_dir`.
+/// `dirs::config_dir()` doesn't resolve to writable, app-scoped storage — Android
+/// (unwritable cwd) and iOS (no user config dir at all). When set,
+/// `config_dir()` uses this instead. See `set_config_dir`.
 static CONFIG_DIR_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
-/// Pin the base config directory (e.g. to Tauri's `app_data_dir()` on Android).
-/// Must be called before any storage access; later calls are ignored.
-#[cfg(target_os = "android")]
+/// Pin the base config directory (e.g. to Tauri's `app_data_dir()` on Android
+/// and iOS). Must be called before any storage access; later calls are ignored.
+#[cfg(any(target_os = "android", target_os = "ios"))]
 pub fn set_config_dir(dir: PathBuf) {
     let _ = CONFIG_DIR_OVERRIDE.set(dir);
 }
