@@ -6,3 +6,4 @@ pub mod identity;
 pub mod manager;
 pub mod protocol;
 pub mod route;
+pub mod stream;

@@ -1,5 +1,5 @@
 use super::discovery::{self, classify_mdns_error, Discovery, DiscoveryError};
-use super::handshake::{handshake, HandshakeError, SessionReader, SessionWriter};
+use super::handshake::{handshake, ping_timer, HandshakeError, SessionReader, SessionWriter};
 use super::identity::LocalIdentity;
 use super::protocol::{Frame, Hello};
 use super::route::{classify, Route};
@@ -21,21 +21,10 @@ const MAX_OUTBOUND_HANDSHAKES: usize = 4;
 const RATE_MAX: usize = 5;
 const RATE_WINDOW: Duration = Duration::from_secs(10);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
-const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const REDIAL_DELAY: Duration = Duration::from_secs(1);
 const REMEMBERED: usize = 32;
 const CONTROL: usize = 4;
-const PING_EVERY: Duration = if cfg!(test) {
-    Duration::from_millis(100)
-} else {
-    Duration::from_secs(10)
-};
-const IDLE_TIMEOUT: Duration = if cfg!(test) {
-    Duration::from_secs(3)
-} else {
-    Duration::from_secs(30)
-};
 const RETRY_FIRST: Duration = if cfg!(test) {
     Duration::from_millis(200)
 } else {
@@ -132,9 +121,7 @@ async fn secure(
         .await
         .inspect_err(|e| log::debug!("lan-sync: handshake with {addr} failed: {e}"))?;
     let session_id = session.handshake_hash().to_vec();
-    let (mut reader, mut writer) = session.split();
-    reader.set_idle_timeout(IDLE_TIMEOUT);
-    writer.set_write_timeout(WRITE_TIMEOUT);
+    let (reader, writer) = session.split_live();
     Ok(Link {
         hello,
         addr,
@@ -513,7 +500,7 @@ async fn pump_out(
     mut latest: watch::Receiver<Latest>,
     mut control: mpsc::Receiver<Frame>,
 ) {
-    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_EVERY, PING_EVERY);
+    let mut ping = ping_timer();
     loop {
         let frame = tokio::select! {
             nudge = control.recv() => {
