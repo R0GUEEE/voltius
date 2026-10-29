@@ -5,13 +5,6 @@
   "minAppVersion": "0.20.0",
   "description": "Monitor and manage running processes for local and SSH sessions.",
   "icon": "lucide:cpu",
-  "permissions": [
-    "processes:read",
-    "processes:manage",
-    "sessions:read",
-    "right-panel",
-    "ui",
-    "mcp:contribute"
-  ],
+  "permissions": ["processes:read", "processes:manage", "sessions:read", "right-panel", "ui", "mcp:contribute"],
   "defaultEnabled": true
 }
