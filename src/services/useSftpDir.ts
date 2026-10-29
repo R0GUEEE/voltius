@@ -6,13 +6,15 @@ import {
   sftpMkdir, sftpRename, sftpDelete, sftpTouch,
 } from "@/services/sftp";
 import { connectFileBackend } from "@/services/sftpTarget";
+import { connectDevice } from "@/services/deviceFiles";
+import type { MyDevice } from "@/services/myDevices";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { type FileEntry, genId } from "@/components/filetransfer/SFTPTypes";
 import { useDirListing } from "@/components/filetransfer/useDirListing";
 import { joinPath } from "@/components/filetransfer/moveTargetCore";
 import { connectErrorPhase, useConnectRetry } from "@/hooks/useConnectRetry";
 import type { Connection } from "@/types";
-import type { BackendErrorCode } from "@/services/backendErrors";
+import { BackendError, type BackendErrorCode } from "@/services/backendErrors";
 
 export type SftpPhase =
   | { tag: "connecting" }
@@ -35,9 +37,14 @@ export function breadcrumbs(path: string): { name: string; path: string }[] {
   return out;
 }
 
+export type SftpDirTarget = Connection | { device: MyDevice };
+
+const targetKey = (t: SftpDirTarget | undefined) => (!t ? undefined : "device" in t ? t.device.deviceId : t.id);
+
 /** Standalone remote SFTP browser for one Connection: own SSH/SFTP connection, cwd nav,
  *  dir listing, file ops. Remote-only (no local FS). Transfers NOT handled here. */
-export function useSftpDir(connection: Connection | undefined) {
+export function useSftpDir(target: SftpDirTarget | undefined) {
+  const key = targetKey(target);
   const [phase, setPhase] = useState<SftpPhase>({ tag: "connecting" });
   const [cwd, setCwd] = useState<string>("/");
   const [refreshTick, setRefreshTick] = useState(0);
@@ -47,13 +54,18 @@ export function useSftpDir(connection: Connection | undefined) {
 
   // Connect once per connection.
   useEffect(() => {
-    if (!connection) return;
+    if (!target) return;
     let cancelled = false;
     setPhase({ tag: "connecting" });
     (async () => {
       try {
-        const sftpId = await connectFileBackend(connection, genId());
-        useConnectionStore.getState().setLastUsed(connection.id).catch(() => {});
+        let sftpId: string;
+        if ("device" in target) {
+          sftpId = (await connectDevice(target.device.deviceId, genId())).sftpId;
+        } else {
+          sftpId = await connectFileBackend(target, genId());
+          useConnectionStore.getState().setLastUsed(target.id).catch(() => {});
+        }
         if (cancelled) { sftpClose(sftpId).catch(() => {}); return; }
         sftpIdRef.current = sftpId;
         const home = await sftpCanonicalize(sftpId, ".");
@@ -68,19 +80,22 @@ export function useSftpDir(connection: Connection | undefined) {
       cancelled = true;
       if (sftpIdRef.current) { sftpClose(sftpIdRef.current).catch(() => {}); sftpIdRef.current = null; }
     };
-  }, [connection?.id, retryTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key, retryTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-reconnect on error. Mobile backgrounding (e.g. SAF picker) freezes the
   // process and trips keepalive; retry so the drop self-heals instead of dead-ending.
-  const { retrying, reset: resetRetry } = useConnectRetry(phase, () => setRetryTick((n) => n + 1), connection?.id);
+  const { retrying, reset: resetRetry } = useConnectRetry(phase, () => setRetryTick((n) => n + 1), key);
   const reconnect = useCallback(() => { resetRetry(); setRetryTick((n) => n + 1); }, [resetRetry]);
 
   // Detect connection loss.
   useEffect(() => {
     if (phase.tag !== "connected") return;
     const id = phase.sftpId;
-    const un = listen(`sftp-closed-${id}`, () =>
-      setPhase((p) => (p.tag === "connected" && p.sftpId === id ? { tag: "error", message: i18n.t("fileTransfer.page.connectionLost") } : p)));
+    const un = listen<{ code?: BackendErrorCode } | null>(`sftp-closed-${id}`, ({ payload }) => {
+      const lost = i18n.t("fileTransfer.page.connectionLost");
+      const next: SftpPhase = payload?.code ? connectErrorPhase(new BackendError(payload.code, lost)) : { tag: "error", message: lost };
+      setPhase((p) => (p.tag === "connected" && p.sftpId === id ? next : p));
+    });
     return () => { un.then((fn) => fn()); };
   }, [phase]);
 

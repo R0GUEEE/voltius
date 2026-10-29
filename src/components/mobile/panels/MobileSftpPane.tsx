@@ -18,6 +18,9 @@ import { useTransferQueueStore } from "@/stores/transferQueueStore";
 import { writeClipboard } from "@/utils/clipboard";
 import type { Connection } from "@/types";
 import { connectionDisplayName } from "@/utils/connectionDisplayName";
+import { AvatarTile } from "@/components/shared/AvatarTile";
+import { DEVICE_TILE_BASE, deviceIcon } from "@/utils/icons";
+import type { MyDevice } from "@/services/myDevices";
 import { ConnectionAvatar } from "@/components/shared/ConnectionAvatar";
 import BottomSheet from "../sheets/BottomSheet";
 import { compareStrings } from "@/utils/localeFormat";
@@ -46,10 +49,11 @@ type Controller = ReturnType<typeof useSftpDir>;
  * walks up one directory at a time until "/".
  */
 export default function MobileSftpPane({
-  controller, connection, selected, onSelectionChange, onPickHost, onCopyToOther, otherConnected, headerSlot, onScreen, backUp,
+  controller, connection, device, selected, onSelectionChange, onPickHost, onCopyToOther, otherConnected, headerSlot, onScreen, backUp,
 }: {
   controller: Controller;
   connection: Connection | undefined;
+  device?: MyDevice;
   selected: FileEntry[];
   onSelectionChange: (items: FileEntry[]) => void;
   onPickHost: () => void;
@@ -182,7 +186,7 @@ export default function MobileSftpPane({
     }
   };
 
-  if (!connection) {
+  if (!connection && !device) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-3 px-6 text-center">
         <Icon icon="lucide:folder-open" width={28} className="text-(--t-text-dim)" />
@@ -221,8 +225,12 @@ export default function MobileSftpPane({
       {selectionBar}
       <div className="shrink-0 flex items-center h-12 border-b" style={{ borderColor: "var(--t-border)" }}>
         <button data-sftp-pane-host onClick={onPickHost} className="h-12 flex items-center gap-2 min-w-0 pl-3 pr-2 rounded-full">
-          <ConnectionAvatar connection={connection} size={22} />
-          <span className="text-sm font-medium text-(--t-text-primary) truncate">{connectionDisplayName(connection)}</span>
+          {device ? (
+            <AvatarTile base={DEVICE_TILE_BASE} icon={deviceIcon(device.platform)} iconSize={12} className="w-[1.375rem] h-[1.375rem] rounded-md text-(--t-text-bright)" />
+          ) : (
+            <ConnectionAvatar connection={connection!} size={22} />
+          )}
+          <span className="text-sm font-medium text-(--t-text-primary) truncate">{device ? device.name : connectionDisplayName(connection!)}</span>
           <Icon icon="lucide:chevron-down" width={14} className="text-(--t-text-dim) shrink-0" />
         </button>
         <div className="flex-1" />

@@ -5,6 +5,7 @@ import { useAllConnections } from "@/hooks/useAllConnections";
 import { useSftpDir } from "@/services/useSftpDir";
 import { buildTransferTargets } from "@/services/sftpTransferCore";
 import { sftpTransfer, sftpTransferDir } from "@/services/sftp";
+import type { Connection } from "@/types";
 import { isSshConnection } from "@/services/credentialScope";
 import { useTransferQueueStore } from "@/stores/transferQueueStore";
 import { useSessionStore } from "@/stores/sessionStore";
@@ -14,7 +15,7 @@ import MobilePanelHeader from "./MobilePanelHeader";
 import MobileSftpPane from "./MobileSftpPane";
 import SftpHostPickerSheet from "../sheets/SftpHostPickerSheet";
 import { NotificationBell } from "@/components/notifications/NotificationBell";
-import { NO_SELECTION, paneItems, setPaneSelection, type SftpPaneId, type SftpSelection } from "./sftpSelectionCore";
+import { NO_SELECTION, paneItems, setPaneSelection, type SftpPaneId, type SftpPaneTarget, type SftpSelection } from "./sftpSelectionCore";
 
 /**
  * Mobile SFTP: one remote pane by default; the top-bar toggle (remembered) adds the second
@@ -38,8 +39,10 @@ export default function MobileSftpScreen({ presetConnectionId, asTab, visible = 
     (t) => (t.status === "running" || t.status === "error") && !dismissed.includes(t.id),
   );
 
-  const [connAId, setConnAId] = useState<string | undefined>(presetConnectionId);
-  const [connBId, setConnBId] = useState<string | undefined>(undefined);
+  const [targetA, setTargetA] = useState<SftpPaneTarget | undefined>(presetConnectionId ? { kind: "connection", id: presetConnectionId } : undefined);
+  const [targetB, setTargetB] = useState<SftpPaneTarget | undefined>(undefined);
+  const connAId = targetA?.kind === "connection" ? targetA.id : undefined;
+  const connBId = targetB?.kind === "connection" ? targetB.id : undefined;
   const [sel, setSel] = useState<SftpSelection>(NO_SELECTION);
   const [picking, setPicking] = useState<SftpPaneId | null>(null);
   // The pane Back navigates up in: the one last touched (always "a" with one pane).
@@ -49,15 +52,16 @@ export default function MobileSftpScreen({ presetConnectionId, asTab, visible = 
 
   const connA = useMemo(() => connections.find((c) => c.id === connAId), [connections, connAId]);
   const connB = useMemo(() => connections.find((c) => c.id === connBId), [connections, connBId]);
-  const ctrlA = useSftpDir(connA);
-  const ctrlB = useSftpDir(connB);
+  const dirTarget = (t: SftpPaneTarget | undefined, conn: Connection | undefined) => (t?.kind === "device" ? { device: t.device } : conn);
+  const ctrlA = useSftpDir(dirTarget(targetA, connA));
+  const ctrlB = useSftpDir(dirTarget(targetB, connB));
 
   // The SFTP tab opens on the current terminal session's host when nothing is picked yet.
   const activeConnId = useSessionStore((s) => s.sessions.find((x) => x.id === s.activeSessionId)?.connectionId);
   useEffect(() => {
     if (!asTab || !visible || connAId || !activeConnId) return;
     const c = connections.find((x) => x.id === activeConnId);
-    if (c && isSshConnection(c)) setConnAId(c.id);
+    if (c && isSshConnection(c)) setTargetA({ kind: "connection", id: c.id });
   }, [asTab, visible]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Back to one pane: pane b's selection goes with it.
@@ -83,10 +87,10 @@ export default function MobileSftpScreen({ presetConnectionId, asTab, visible = 
   };
 
   const pane = (id: SftpPaneId) => {
-    const [ctrl, conn, other] = id === "a" ? [ctrlA, connA, ctrlB] : [ctrlB, connB, ctrlA];
+    const [ctrl, conn, target, other] = id === "a" ? [ctrlA, connA, targetA, ctrlB] : [ctrlB, connB, targetB, ctrlA];
     return (
       <div className="flex-1 min-h-0 flex flex-col" data-sftp-pane={id} onPointerDown={() => setFocused(id)}>
-        <MobileSftpPane controller={ctrl} connection={conn} selected={paneItems(sel, id)}
+        <MobileSftpPane controller={ctrl} connection={conn} device={target?.kind === "device" ? target.device : undefined} selected={paneItems(sel, id)}
           onSelectionChange={(items) => setSel(setPaneSelection(id, items))} onPickHost={() => setPicking(id)}
           onCopyToOther={(items) => void copy(id, items)} otherConnected={twoPanes && other.sftpId != null}
           headerSlot={headerSlot} onScreen={visible} backUp={visible && backPane === id && sel.pane == null} />
@@ -169,8 +173,8 @@ export default function MobileSftpScreen({ presetConnectionId, asTab, visible = 
         <SftpHostPickerSheet
           excludeId={picking === "a" ? connBId : connAId}
           onClose={() => setPicking(null)}
-          onPick={(id) => {
-            if (picking === "a") setConnAId(id); else setConnBId(id);
+          onPick={(target) => {
+            if (picking === "a") setTargetA(target); else setTargetB(target);
             setSel((s) => (s.pane === picking ? NO_SELECTION : s));
             setPicking(null);
           }}

@@ -10,6 +10,9 @@ vi.mock("@iconify/react", () => ({ Icon: () => null }));
 vi.mock("@/components/shared/ConnectionAvatar", () => ({ ConnectionAvatar: () => null }));
 vi.mock("./BottomSheet", () => ({ default: ({ children }: { children: React.ReactNode }) => <div>{children}</div> }));
 
+const devices = vi.hoisted(() => ({ rows: [] as unknown[] }));
+vi.mock("@/services/myDevices", async (orig) => ({ ...(await orig<typeof import("@/services/myDevices")>()), useMyDevices: () => devices.rows }));
+
 import SftpHostPickerSheet from "./SftpHostPickerSheet";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useFolderStore } from "@/stores/folderStore";
@@ -20,6 +23,7 @@ const initial = [useConnectionStore, useFolderStore, useTeamStore, useVaultStore
 
 afterEach(() => {
   cleanup();
+  devices.rows = [];
   for (const [store, state] of initial) (store.setState as (s: unknown, r: true) => void)(state, true);
 });
 
@@ -78,4 +82,30 @@ test("leaves out the host already open in the other pane", () => {
   render(<SftpHostPickerSheet excludeId="team-box" onPick={() => {}} onClose={() => {}} />);
   expect(screen.queryByText("team-box")).toBeNull();
   expect(screen.getByText("home-box")).toBeTruthy();
+});
+
+test("my devices sit above the recent hosts and a ready device is reported as a device target", () => {
+  seed();
+  const used = { last_used_at: "2026-02-01T00:00:00Z" };
+  useConnectionStore.setState({ connections: [host("home-box", "personal", used)], teamConnections: {} });
+  const desktop = { deviceId: "d1", deviceKey: "k", name: "Work PC", platform: "windows", state: "ready", route: "lan", lastSeen: null };
+  devices.rows = [desktop, { ...desktop, deviceId: "d2", name: "Off PC", state: "off" }];
+  const onPick = vi.fn();
+  const { container } = render(<SftpHostPickerSheet onPick={onPick} onClose={() => {}} />);
+  const group = container.querySelector("[data-my-devices]")!;
+  const recent = container.querySelector("[data-host-picker-recent]")!;
+  expect(group.compareDocumentPosition(recent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  fireEvent.click(screen.getByText("Off PC"));
+  expect(onPick).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText("Work PC"));
+  expect(onPick).toHaveBeenCalledWith({ kind: "device", device: desktop });
+});
+
+test("picking a host reports a connection target", () => {
+  seed();
+  const onPick = vi.fn();
+  render(<SftpHostPickerSheet onPick={onPick} onClose={() => {}} />);
+  fireEvent.click(screen.getByText("home-box"));
+  expect(onPick).toHaveBeenCalledWith({ kind: "connection", id: "home-box" });
 });

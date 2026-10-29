@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useHostPicker } from "@/hooks/useHostPicker";
 import { HostPickerTree } from "@/components/shared/HostPickerTree";
@@ -44,7 +44,7 @@ function PickRow({ c, attr, pingEnabled, onPick }: { c: Connection; attr: string
  * `attr` names its test hooks (`data-<attr>-search|-vault|-pick`).
  */
 export default function HostPickerSheet({
-  title, attr, emptyLabel, sshOnly, excludeId, autoFocusSearch = true, onPick, onClose,
+  title, attr, emptyLabel, sshOnly, excludeId, autoFocusSearch = true, devices, onPick, onClose,
 }: {
   title: string;
   attr: string;
@@ -53,6 +53,7 @@ export default function HostPickerSheet({
   excludeId?: string;
   /** Off where the soft keyboard popping up with the sheet would cover the recent hosts. */
   autoFocusSearch?: boolean;
+  devices?: (query: string) => ReactNode;
   onPick: (id: string) => void;
   onClose: () => void;
 }) {
@@ -79,6 +80,7 @@ export default function HostPickerSheet({
         </div>
       )}
       <div className="max-h-[50vh] overflow-y-auto">
+        {devices?.(q)}
         {rows.length === 0 && <div className="px-3 py-6 text-center text-sm text-(--t-text-dim)">{emptyLabel}</div>}
         <HostPickerTree
           rows={rows}

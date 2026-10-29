@@ -1,8 +1,12 @@
 import { test, expect, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { Connection } from "@/types";
 
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
+const closed = vi.hoisted(() => ({ handlers: new Map<string, (e: { payload: unknown }) => void>() }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (name: string, cb: (e: { payload: unknown }) => void) => { closed.handlers.set(name, cb); return () => {}; }),
+}));
+vi.mock("@/services/deviceFiles", () => ({ connectDevice: vi.fn(async () => ({ sftpId: "sftp-dev", rttMs: 3 })) }));
 vi.mock("@/services/sftpTarget", () => ({ connectFileBackend: vi.fn(async () => "sftp-1") }));
 vi.mock("@/services/sftp", () => ({
   sftpClose: vi.fn(async () => {}),
@@ -20,4 +24,23 @@ test("opening a host in the SFTP browser marks it as used", async () => {
   const conn = { id: "c1", host: "box", port: 22, username: "u" } as Connection;
   renderHook(() => useSftpDir(conn));
   await waitFor(() => expect(setLastUsed).toHaveBeenCalledWith("c1"));
+});
+
+test("device_target_uses_connectDevice", async () => {
+  const { connectDevice } = await import("@/services/deviceFiles");
+  const { connectFileBackend } = await import("@/services/sftpTarget");
+  const device = { deviceId: "d1", deviceKey: "k", name: "Work PC", platform: "linux", state: "ready", route: "lan", lastSeen: null } as const;
+  const { result } = renderHook(() => useSftpDir({ device }));
+  await waitFor(() => expect(result.current.phase).toEqual({ tag: "connected", sftpId: "sftp-dev" }));
+  expect(connectDevice).toHaveBeenCalledWith("d1", expect.any(String));
+  expect(connectFileBackend).not.toHaveBeenCalledWith(expect.objectContaining({ id: "d1" }), expect.anything());
+});
+
+test("a coded sftp-closed shows that code's message and stops retrying", async () => {
+  const device = { deviceId: "d2", deviceKey: "k", name: "Work PC", platform: "linux", state: "ready", route: "lan", lastSeen: null } as const;
+  const { result } = renderHook(() => useSftpDir({ device }));
+  await waitFor(() => expect(result.current.phase.tag).toBe("connected"));
+  await waitFor(() => expect(closed.handlers.has("sftp-closed-sftp-dev")).toBe(true));
+  act(() => closed.handlers.get("sftp-closed-sftp-dev")!({ payload: { code: "device-file-access-off" } }));
+  expect(result.current.phase).toMatchObject({ tag: "error", errorCode: "device-file-access-off", final: true });
 });
