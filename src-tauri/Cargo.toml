@@ -79,7 +79,6 @@ fontdb = { version = "0.24", default-features = false, features = ["fs", "memmap
 bollard = "0.21"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
-serialport = { version = "4", default-features = false }
 aes = "0.9"
 cfb8 = "0.9"
 cbc = { version = "0.2", features = ["block-padding"] }
@@ -158,3 +157,9 @@ tempfile = "3"
 # Paused clock, so stall-watchdog tests skip the real 15 s wait.
 tokio = { version = "1", features = ["test-util"] }
 vt100 = "0.16"
+
+# `serialport`'s Darwin backend links IOKit (IOServiceMatching / kIOMasterPortDefault),
+# which iOS does not export — the app would fail at link time. `serial::connect_ios`
+# answers the same commands with a refusal on iOS instead.
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+serialport = { version = "4", default-features = false }
