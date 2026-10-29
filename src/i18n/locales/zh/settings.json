@@ -206,8 +206,8 @@
             "windows": "Windows Hello",
             "macos": "触控 ID 或 Mac 密码",
             "linux": "系统密码",
-            "android": "指纹或屏幕锁"
-          }
+            "android": "指纹或屏幕锁",
+            "ios": "面容 ID 或您的锁屏密码"          }
         }
       },
       "email": "邮箱",

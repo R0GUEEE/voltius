@@ -268,11 +268,16 @@ describe("plugin catalogue publish pipeline", () => {
 
   test("releaseRepoFor matches the client's unprefixed fetch pattern", () => {
     const repo = releaseRepoFor("plugin-docker", "9.9.9");
-    expect(repo).toBe("https://github.com/VoltiusApp/voltius/releases/download/plugin-docker-v9.9.9");
+    // The release host is the repo the build runs in, which is the upstream slug
+    // on a normal checkout and the fork's own slug in a fork's CI (where
+    // GITHUB_REPOSITORY is set and `releaseRepoFor` correctly follows it). Pinning
+    // the literal made this assertion pass only on upstream.
+    const slug = process.env.GITHUB_REPOSITORY ?? "VoltiusApp/voltius";
+    expect(repo).toBe(`https://github.com/${slug}/releases/download/plugin-docker-v9.9.9`);
     // src/stores/marketplaceStore.ts always fetches `${plugin.repo}/index.js` and
     // `${plugin.repo}/manifest.json` verbatim — no per-plugin prefix.
     expect(`${repo}/index.js`).toBe(
-      "https://github.com/VoltiusApp/voltius/releases/download/plugin-docker-v9.9.9/index.js",
+      `https://github.com/${slug}/releases/download/plugin-docker-v9.9.9/index.js`,
     );
   });
 });
