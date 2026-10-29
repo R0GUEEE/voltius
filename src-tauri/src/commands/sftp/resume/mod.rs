@@ -1385,7 +1385,7 @@ pub(crate) mod engine_tests {
         assert_eq!(std::fs::read(locked.join("v")).unwrap(), b"new");
     }
 
-    fn tree(root: &std::path::Path) {
+    pub(crate) fn tree(root: &std::path::Path) {
         std::fs::create_dir_all(root.join("sub/empty")).unwrap();
         std::fs::write(root.join("a"), noise(300_000)).unwrap();
         std::fs::write(root.join("sub/b"), noise(200_000)).unwrap();

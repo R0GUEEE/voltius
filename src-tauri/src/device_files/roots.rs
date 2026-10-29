@@ -29,7 +29,7 @@ fn base_name(path: &Path) -> String {
         .into_owned()
 }
 
-fn normalize(vpath: &str) -> Vec<&str> {
+pub(super) fn normalize(vpath: &str) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
     for seg in vpath.split('/') {
         match seg {
@@ -58,6 +58,19 @@ fn confine(canon_root: &Path, p: &Path, missing: Jail) -> Result<PathBuf, Jail> 
     }
 }
 
+fn under(canon: &Path, comps: &[&str]) -> Result<PathBuf, Jail> {
+    confine(
+        canon,
+        &canon.join(comps.iter().collect::<PathBuf>()),
+        Jail::NotFound,
+    )
+}
+
+fn unfollowed(canon: &Path, comps: &[&str]) -> Result<PathBuf, Jail> {
+    let (leaf, parent) = comps.split_last().expect("non-empty components");
+    Ok(under(canon, parent)?.join(leaf))
+}
+
 impl SharedRoots {
     pub fn new(folders: &[PathBuf]) -> Self {
         let mut roots: Vec<Root> = Vec::with_capacity(folders.len());
@@ -81,58 +94,52 @@ impl SharedRoots {
         self.roots.iter().map(|r| r.name.clone()).collect()
     }
 
-    fn locate<'a>(&self, comps: &'a [&'a str]) -> Result<(usize, PathBuf, &'a [&'a str]), Jail> {
-        let (first, rest) = comps.split_first().expect("non-empty components");
+    pub fn root_dir(&self, idx: usize) -> Result<PathBuf, Jail> {
+        let root = self.roots.get(idx).ok_or(Jail::NotFound)?;
+        root.path.canonicalize().map_err(|_| Jail::NotFound)
+    }
+
+    fn walk(
+        &self,
+        vpath: &str,
+        inside: impl FnOnce(&Path, &[&str]) -> Result<PathBuf, Jail>,
+    ) -> Result<Resolved, Jail> {
+        let comps = normalize(vpath);
+        let Some((first, rest)) = comps.split_first() else {
+            return Ok(Resolved::VirtualRoot);
+        };
         if comps.iter().any(|c| is_host_specific(c)) {
             return Err(Jail::Outside);
         }
-        let idx = self
+        let root = self
             .roots
             .iter()
             .position(|r| r.name == *first)
             .ok_or(Jail::NotFound)?;
-        let canon = self.roots[idx]
-            .path
-            .canonicalize()
-            .map_err(|_| Jail::NotFound)?;
-        Ok((idx, canon, rest))
-    }
-
-    pub fn resolve(&self, vpath: &str) -> Result<Resolved, Jail> {
-        let comps = normalize(vpath);
-        if comps.is_empty() {
-            return Ok(Resolved::VirtualRoot);
-        }
-        let (root, canon, rest) = self.locate(&comps)?;
+        let canon = self.root_dir(root)?;
         if rest.is_empty() {
             return Ok(Resolved::Root(root));
         }
-        let target = confine(
-            &canon,
-            &canon.join(rest.iter().collect::<PathBuf>()),
-            Jail::NotFound,
-        )?;
-        Ok(Resolved::Inside { root, path: target })
+        let path = inside(&canon, rest)?;
+        Ok(Resolved::Inside { root, path })
+    }
+
+    pub fn resolve(&self, vpath: &str) -> Result<Resolved, Jail> {
+        self.walk(vpath, under)
+    }
+
+    pub fn resolve_entry(&self, vpath: &str) -> Result<Resolved, Jail> {
+        self.walk(vpath, unfollowed)
     }
 
     pub fn resolve_for_create(&self, vpath: &str) -> Result<Resolved, Jail> {
-        let comps = normalize(vpath);
-        if comps.len() < 2 {
-            return Err(Jail::Outside);
-        }
-        let (parent_comps, leaf) = comps.split_at(comps.len() - 1);
-        let leaf = leaf[0];
-        let (root, canon, rest) = self.locate(parent_comps)?;
-        let parent = confine(
-            &canon,
-            &canon.join(rest.iter().collect::<PathBuf>()),
-            Jail::NotFound,
-        )?;
-        let path = parent.join(leaf);
-        if path.symlink_metadata().is_ok() {
-            confine(&canon, &path, Jail::Outside)?;
-        }
-        Ok(Resolved::Inside { root, path })
+        self.walk(vpath, |canon, rest| {
+            let path = unfollowed(canon, rest)?;
+            if path.symlink_metadata().is_ok() {
+                confine(canon, &path, Jail::Outside)?;
+            }
+            Ok(path)
+        })
     }
 }
 
@@ -237,6 +244,29 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn entry_keeps_the_leaf_symlink_unfollowed() {
+        let f = fixture();
+        assert_eq!(
+            f.roots.resolve_entry("/share/link").unwrap(),
+            Resolved::Inside {
+                root: 0,
+                path: f.root.join("link")
+            }
+        );
+        assert_eq!(
+            f.roots.resolve_entry("/share/inner/f.txt").unwrap(),
+            Resolved::Inside {
+                root: 0,
+                path: f.root.join("a/f.txt")
+            }
+        );
+        assert_eq!(f.roots.resolve_entry("/share/link/pw"), Err(Jail::Outside));
+        assert_eq!(f.roots.resolve_entry("/share"), Ok(Resolved::Root(0)));
+        assert_eq!(f.roots.resolve_entry("/"), Ok(Resolved::VirtualRoot));
+    }
+
     #[test]
     fn duplicate_names_get_suffix() {
         let dir = tempfile::tempdir().unwrap();
@@ -267,8 +297,11 @@ mod tests {
     #[test]
     fn create_rejects_separator_in_leaf() {
         let f = fixture();
-        assert_eq!(f.roots.resolve_for_create("/share"), Err(Jail::Outside));
-        assert_eq!(f.roots.resolve_for_create("/share/.."), Err(Jail::Outside));
+        assert_eq!(f.roots.resolve_for_create("/share"), Ok(Resolved::Root(0)));
+        assert_eq!(
+            f.roots.resolve_for_create("/share/.."),
+            Ok(Resolved::VirtualRoot)
+        );
         assert_eq!(
             f.roots.resolve_for_create("/share/a/new.txt").unwrap(),
             Resolved::Inside {
@@ -323,6 +356,13 @@ mod tests {
         ) {
             let f = fixture();
             let vpath = format!("/{first}/{}", segs.join("/"));
+            if let Ok(Resolved::Inside { path, .. }) = f.roots.resolve_entry(&vpath) {
+                let parent = path.parent().and_then(|p| p.canonicalize().ok());
+                prop_assert!(
+                    parent.is_some_and(|p| p.starts_with(&f.root)),
+                    "{path:?} parent escaped for {vpath:?}"
+                );
+            }
             for r in [f.roots.resolve(&vpath), f.roots.resolve_for_create(&vpath)] {
                 if let Ok(Resolved::Inside { path, .. }) = r {
                     let real = match path.canonicalize() {
