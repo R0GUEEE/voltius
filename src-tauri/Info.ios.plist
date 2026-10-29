@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated gen/apple/<App>_iOS/Info.plist by `tauri ios init`.
+  Keys here cannot be expressed in tauri.conf.json; drop them and the app still
+  launches, but the features they gate are refused by iOS without a prompt.
+-->
+<plist version="1.0">
+<dict>
+	<!-- iOS 14+: without this string the local-network permission is denied
+	     outright, so every SSH/SFTP connection to a LAN host fails. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Voltius connects to SSH, SFTP and other servers on your local network.</string>
+	<!-- LAContext (system_auth) prompts for Face ID on biometric unlock. -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Voltius uses Face ID to unlock your vault and app lock.</string>
+	<!-- Let SFTP downloads and exported configs show up in Files.app. -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<!-- The SSH stack's AES/ChaCha is standard cryptography, not "non-exempt". -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<!-- Background key material must not land in an iTunes/Finder backup. -->
+	<key>UIApplicationExitsOnSuspend</key>
+	<false/>
+</dict>
+</plist>

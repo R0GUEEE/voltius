@@ -59,10 +59,11 @@ jobs:
       - name: Generate the Xcode project
         run: pnpm tauri ios init --ci
 
-      # The generator only writes what Tauri can express. These keys cannot be
-      # expressed in tauri.conf.json and the app is broken or degraded without
-      # them, so they are merged into the generated Info.plist here.
-      - name: Info.plist — iOS-only keys
+      # tauri.conf.json bundle.iOS.infoPlist merges src-tauri/Info.ios.plist into
+      # the generated Info.plist. Assert that it actually happened: a silently
+      # missing NSLocalNetworkUsageDescription only shows up as "SSH cannot
+      # connect to my server" on a device.
+      - name: Verify the iOS Info.plist
         run: |
           python3 - <<'PY'
           import glob, plistlib, sys
@@ -70,28 +71,19 @@ jobs:
           plists = glob.glob("src-tauri/gen/apple/*_iOS/Info.plist")
           if len(plists) != 1:
               sys.exit(f"expected exactly one Info.plist, found {plists}")
-          path = plists[0]
-          with open(path, "rb") as f:
+          with open(plists[0], "rb") as f:
               info = plistlib.load(f)
 
-          info.update({
-              # iOS 14+ requires a usage string before an app may touch the local
-              # network; without it every SSH/SFTP connection to a LAN host is
-              # refused and the prompt is never shown.
-              "NSLocalNetworkUsageDescription":
-                  "Voltius connects to SSH, SFTP and other servers on your local network.",
-              "NSFaceIDUsageDescription":
-                  "Voltius uses Face ID to unlock your vault and app lock.",
-              # Make SFTP downloads and exported configs reachable in Files.app.
-              "UIFileSharingEnabled": True,
-              "LSSupportsOpeningDocumentsInPlace": True,
-              # rsync/AES/ChaCha in the SSH stack is standard, not "non-exempt".
-              "ITSAppUsesNonExemptEncryption": False,
-          })
-          with open(path, "wb") as f:
-              plistlib.dump(info, f)
-          print("patched", path)
-          print("\n".join(sorted(info)))
+          required = [
+              "NSLocalNetworkUsageDescription",
+              "NSFaceIDUsageDescription",
+              "ITSAppUsesNonExemptEncryption",
+          ]
+          missing = [k for k in required if k not in info]
+          if missing:
+              sys.exit(f"{plists[0]} is missing {missing}")
+          print(f"{plists[0]}: {len(info)} keys, all required keys present")
+          print("minimum OS:", info.get("MinimumOSVersion"))
           PY
 
       - name: Build (unsigned)
